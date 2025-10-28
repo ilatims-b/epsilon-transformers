@@ -60,8 +60,7 @@ class LocalPersister(Persister):
         print(f"Saving model to {save_path}")
         torch.save(model.state_dict(), save_path)
 
-    def load_model(self, model: TorchModule, object_name: str) -> TorchModule:
-        raise NotImplementedError
+    def load_model(self, model: TorchModule, object_name: str) -> TorchModule:    
         state_dict = torch.load(self.collection_location / object_name)
         model.load_state_dict(state_dict=state_dict)
         return model
