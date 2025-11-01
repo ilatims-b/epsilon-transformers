@@ -1,5 +1,6 @@
 import pathlib
 import tempfile
+
 # import boto3
 import pytest
 import torch
@@ -32,7 +33,7 @@ from epsilon_transformers.training.train import train_model
 
 def test_e2e_training():
     bucket_path = pathlib.Path(tempfile.mkdtemp(prefix="local-s3-bucket-"))
-    
+
     model_config = RawModelConfig(
         d_vocab=2,
         d_model=100,
@@ -61,9 +62,7 @@ def test_e2e_training():
         optimizer=optimizer_config,
         dataset=dataset_config,
         persistance=persistance_config,
-        logging=LoggingConfig(
-            project_name="local-s3-test", wandb=False
-        ),
+        logging=LoggingConfig(project_name="local-s3-test", wandb=False),
         verbose=True,
         seed=1337,
     )
@@ -75,6 +74,7 @@ def test_e2e_training():
 def test_s3_save_model_overwrite_protection():
     # Define a simple neural network
     bucket_path = pathlib.Path(tempfile.mkdtemp(prefix="local-s3-bucket-"))
+
     class SimpleNN(torch.nn.Module):
         def __init__(self):
             super(SimpleNN, self).__init__()
@@ -89,15 +89,12 @@ def test_s3_save_model_overwrite_protection():
     first_model_path = bucket_path / "45.pt"
     torch.save(network.state_dict(), first_model_path)
 
-   
-    
-
     persister = S3Persister(collection_location=bucket_path)
 
     with pytest.raises(ValueError):
         persister.save_model(network, 45)
 
-    shutil.rmtree(bucket_path)    
+    shutil.rmtree(bucket_path)
 
 
 def load_local_model():
@@ -165,7 +162,9 @@ def save_local_model():
 def test_save_and_load_s3_model():
     bucket_name = pathlib.Path(tempfile.mkdtemp(prefix="local-s3-bucket-"))
     with pytest.raises(AssertionError):
-        S3Persister(collection_location=pathlib.Path("this-path-should-not-exist-99999"))
+        S3Persister(
+            collection_location=pathlib.Path("this-path-should-not-exist-99999")
+        )
 
     persister = S3Persister(collection_location=bucket_name)
 
@@ -271,7 +270,6 @@ def test_s3_persistence_put_and_retrieve_object_from_bucket():
     # Download the serialized network from the bucket
     download_buffer = BytesIO((bucket_path / "model.pt").read_bytes())
 
-
     # Load the downloaded network
     downloaded_network = SimpleNN()
     download_buffer.seek(0)  # Reset download buffer position to the beginning
@@ -312,7 +310,6 @@ def test_s3_create_and_delete_bucket():
 
     bucket_path = pathlib.Path(tempfile.mkdtemp(prefix="local-bucket-"))
 
-
     # Serialize the network to bytes
     buffer = BytesIO()
     torch.save(network.state_dict(), buffer)
@@ -350,6 +347,7 @@ def test_s3_create_and_delete_bucket():
 
     # Assert that the bucket was deleted
     assert not bucket_path.exists(), f"Bucket {bucket_path} was not deleted"
+
 
 if __name__ == "__main__":
     test_save_and_load_s3_model()

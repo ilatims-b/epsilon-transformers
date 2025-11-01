@@ -3,8 +3,9 @@ from io import BytesIO
 import os
 import pathlib
 import re
-# from botocore.exceptions import ClientError  
-# import boto3  
+
+# from botocore.exceptions import ClientError
+# import boto3
 import dotenv
 import torch
 from typing import OrderedDict
@@ -60,7 +61,7 @@ class LocalPersister(Persister):
         print(f"Saving model to {save_path}")
         torch.save(model.state_dict(), save_path)
 
-    def load_model(self, model: TorchModule, object_name: str) -> TorchModule:    
+    def load_model(self, model: TorchModule, object_name: str) -> TorchModule:
         state_dict = torch.load(self.collection_location / object_name)
         model.load_state_dict(state_dict=state_dict)
         return model
@@ -83,10 +84,11 @@ class S3Persister(Persister):
         print(f"Saving model to {save_path}")
         torch.save(model.state_dict(), save_path)
 
-    def load_model(self, model: TorchModule, object_name: str) -> TorchModule:    
+    def load_model(self, model: TorchModule, object_name: str) -> TorchModule:
         state_dict = torch.load(self.collection_location / object_name)
         model.load_state_dict(state_dict=state_dict)
         return model
+
     # def __init__(self, collection_location: str):
     #     dotenv.load_dotenv()
     #     assert os.environ.get("AWS_ACCESS_KEY_ID") is not None
@@ -126,7 +128,6 @@ class S3Persister(Persister):
     def load_csv(self, object_name: str) -> pd.DataFrame:
         file_path = self.collection_location / object_name
         return pd.read_csv(file_path)
-
 
     def load_model(self, object_name: str, device: torch.device) -> TorchModule:
         file_path = self.collection_location / object_name
@@ -172,6 +173,7 @@ class S3Persister(Persister):
         file_path = self.collection_location / object_name
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
+
 
 def _state_dict_to_model_config(
     state_dict: OrderedDict, n_ctx: int = 10
@@ -254,7 +256,8 @@ if __name__ == "__main__":
     cfg = persister.load_json("train_config.json")
     print(cfg)
     import pandas as pd
-    df = pd.DataFrame({"x":[1,2], "y":[3,4]})
+
+    df = pd.DataFrame({"x": [1, 2], "y": [3, 4]})
     df.to_csv("models/mess3/test.csv", index=False)
 
     print(persister.load_csv("test.csv"))
