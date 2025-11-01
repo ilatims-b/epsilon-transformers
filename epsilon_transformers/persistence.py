@@ -3,8 +3,8 @@ from io import BytesIO
 import os
 import pathlib
 import re
-from botocore.exceptions import ClientError  # type: ignore
-import boto3  # type: ignore
+# from botocore.exceptions import ClientError  
+# import boto3  
 import dotenv
 import torch
 from typing import OrderedDict
@@ -67,53 +67,70 @@ class LocalPersister(Persister):
 
 
 class S3Persister(Persister):
-    def __init__(self, collection_location: str):
-        dotenv.load_dotenv()
-        assert os.environ.get("AWS_ACCESS_KEY_ID") is not None
-        assert os.environ.get("AWS_SECRET_ACCESS_KEY") is not None
+    def __init__(self, collection_location: pathlib.Path):
+        assert collection_location.is_dir()
+        assert collection_location.exists()
+        self.collection_location: pathlib.Path = collection_location
 
-        self.s3 = boto3.client("s3")
-        buckets = [x["Name"] for x in self.s3.list_buckets()["Buckets"]]
-        if collection_location not in buckets:
-            raise ValueError(
-                f"{collection_location} is not an existing bucket. Either use one of the existing buckets or create a new bucket"
-            )
-        self.collection_location: str = collection_location
-
-    def _save_overwrite_protection(self, object_name: str):  # type: ignore[override]
-        try:
-            self.s3.head_object(Bucket=self.collection_location, Key=object_name)
-            raise ValueError(
-                f"Overwrite Protection: {self.collection_location}/{object_name} already exists"
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "404":
-                pass
-            else:
-                raise ValueError(f"Expected 404 from empty object, received {e}")
+    def _save_overwrite_protection(self, object_name: pathlib.Path):  # type: ignore[override]
+        if object_name.exists():
+            raise ValueError(f"Overwrite Protection: {object_name} already exists.")
 
     def save_model(self, model: TorchModule, num_tokens_trained: int):
-        object_name = f"{num_tokens_trained}.pt"
-        self._save_overwrite_protection(object_name=object_name)
+        save_path = self.collection_location / f"{num_tokens_trained}.pt"
+        self._save_overwrite_protection(object_name=save_path)
 
-        print(f"Saving model as {object_name} in bucket {self.collection_location}")
+        print(f"Saving model to {save_path}")
+        torch.save(model.state_dict(), save_path)
 
-        buffer = BytesIO()
-        torch.save(model.state_dict(), buffer)
-        buffer.seek(0)
-        self.s3.upload_fileobj(buffer, self.collection_location, object_name)
+    def load_model(self, model: TorchModule, object_name: str) -> TorchModule:    
+        state_dict = torch.load(self.collection_location / object_name)
+        model.load_state_dict(state_dict=state_dict)
+        return model
+    # def __init__(self, collection_location: str):
+    #     dotenv.load_dotenv()
+    #     assert os.environ.get("AWS_ACCESS_KEY_ID") is not None
+    #     assert os.environ.get("AWS_SECRET_ACCESS_KEY") is not None
+
+    #     self.s3 = boto3.client("s3")
+    #     buckets = [x["Name"] for x in self.s3.list_buckets()["Buckets"]]
+    #     if collection_location not in buckets:
+    #         raise ValueError(
+    #             f"{collection_location} is not an existing bucket. Either use one of the existing buckets or create a new bucket"
+    #         )
+    #     self.collection_location: str = collection_location
+
+    # def _save_overwrite_protection(self, object_name: str):  # type: ignore[override]
+    #     try:
+    #         self.s3.head_object(Bucket=self.collection_location, Key=object_name)
+    #         raise ValueError(
+    #             f"Overwrite Protection: {self.collection_location}/{object_name} already exists"
+    #         )
+    #     except ClientError as e:
+    #         if e.response["Error"]["Code"] == "404":
+    #             pass
+    #         else:
+    #             raise ValueError(f"Expected 404 from empty object, received {e}")
+
+    # def save_model(self, model: TorchModule, num_tokens_trained: int):
+    #     object_name = f"{num_tokens_trained}.pt"
+    #     self._save_overwrite_protection(object_name=object_name)
+
+    #     print(f"Saving model as {object_name} in bucket {self.collection_location}")
+
+    #     buffer = BytesIO()
+    #     torch.save(model.state_dict(), buffer)
+    #     buffer.seek(0)
+    #     self.s3.upload_fileobj(buffer, self.collection_location, object_name)
 
     def load_csv(self, object_name: str) -> pd.DataFrame:
-        download_buffer = BytesIO()
-        self.s3.download_fileobj(self.collection_location, object_name, download_buffer)
-        download_buffer.seek(0)
-        return pd.read_csv(download_buffer)
+        file_path = self.collection_location / object_name
+        return pd.read_csv(file_path)
+
 
     def load_model(self, object_name: str, device: torch.device) -> TorchModule:
-        download_buffer = BytesIO()
-        self.s3.download_fileobj(self.collection_location, object_name, download_buffer)
-        download_buffer.seek(0)
-        state_dict = torch.load(download_buffer)
+        file_path = self.collection_location / object_name
+        state_dict = torch.load(file_path, map_location=device)
 
         train_config = self.load_json("train_config.json")
         if train_config is not None:
@@ -142,41 +159,19 @@ class S3Persister(Persister):
         return model
 
     def list_objects(self) -> list[str]:
-        objects = []
-        continuation_token = None
-
-        while True:
-            kwargs = {"Bucket": self.collection_location}
-            if continuation_token:
-                kwargs["ContinuationToken"] = continuation_token
-
-            response = self.s3.list_objects_v2(**kwargs)
-            contents = response.get("Contents", [])
-            objects.extend([obj["Key"] for obj in contents])
-
-            if "NextContinuationToken" in response:
-                continuation_token = response["NextContinuationToken"]
-            else:
-                break
-
-        return objects
+        return [f.name for f in self.collection_location.iterdir() if f.is_file()]
 
     def load_json(self, object_name: str) -> dict | None:
-        try:
-            json_str = self.load_object(object_name)
-            return json.loads(json_str)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "NoSuchKey":
-                return None
-            else:
-                raise e
+        file_path = self.collection_location / object_name
+        if not file_path.exists():
+            return None
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
     def load_object(self, object_name: str) -> str:
-        download_buffer = BytesIO()
-        self.s3.download_fileobj(self.collection_location, object_name, download_buffer)
-        download_buffer.seek(0)
-        return download_buffer.read().decode("utf-8")
-
+        file_path = self.collection_location / object_name
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
 
 def _state_dict_to_model_config(
     state_dict: OrderedDict, n_ctx: int = 10
@@ -254,7 +249,15 @@ def _state_dict_to_model_config(
 if __name__ == "__main__":
     from transformer_lens import HookedTransformer  # type: ignore
 
-    persister = S3Persister(collection_location="mess3-param-change")
+    persister = S3Persister(collection_location=pathlib.Path("./models/mess3"))
+    print("Files:", persister.list_objects())
+    cfg = persister.load_json("train_config.json")
+    print(cfg)
+    import pandas as pd
+    df = pd.DataFrame({"x":[1,2], "y":[3,4]})
+    df.to_csv("models/mess3/test.csv", index=False)
+
+    print(persister.load_csv("test.csv"))
     model: HookedTransformer = persister.load_model(
-        device=torch.device("cpu"), object_name="4800000.pt"
+        device=torch.device("cpu"), object_name="6400.pt"
     )
