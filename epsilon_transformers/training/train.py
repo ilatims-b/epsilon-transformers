@@ -56,13 +56,7 @@ def _check_if_action_batch(
 
 
 def _setup_persister(config: TrainConfig):
-    """Initialize persister based on config."""
-    if config.persistance.location == "local":
-        return Persister(collection_location=config.persistance.collection_location)
-    elif config.persistance.location == "s3":
-        return Persister(collection_location=config.persistance.collection_location)
-    else:
-        raise ValueError(f"Invalid persistance location: {config.persistance.location}")
+    return config.persistance.init()
 
 
 def _setup_kl_analyzers(

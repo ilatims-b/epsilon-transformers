@@ -53,17 +53,18 @@ dataset_config = ProcessDatasetConfig(
     process_params={'x': 0.5, 'a': 0.85},
     batch_size=64,
     num_tokens=5000,
-    test_split=0.00000000015
+    test_split=0.15
 )
 
 
 # ============================================================================
 # Persistence Configuration
 # ============================================================================
+from pathlib import Path
 
 persistance_config = PersistanceConfig(
-    location='s3',
-    collection_location='lucas-mess3-test',
+    location='local',
+    collection_location=Path('models/mess3'),
     checkpoint_every_n_tokens=100
 )
 
