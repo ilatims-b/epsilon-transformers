@@ -52,8 +52,9 @@ dataset_config = ProcessDatasetConfig(
     process='Mess3',
     process_params={'x': 0.5, 'a': 0.85},
     batch_size=64,
-    num_tokens=5000,
-    test_split=0.15
+    num_tokens=50000,
+    sequence_length=10,
+    test_split=0.1
 )
 
 
@@ -65,7 +66,7 @@ from pathlib import Path
 persistance_config = PersistanceConfig(
     location='local',
     collection_location=Path('models/mess3'),
-    checkpoint_every_n_tokens=100
+    checkpoint_every_n_tokens=1000
 )
 
 
