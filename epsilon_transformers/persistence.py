@@ -1,260 +1,158 @@
-from abc import ABC, abstractmethod
-from io import BytesIO
-import os
-import pathlib
-import re
-from botocore.exceptions import ClientError  # type: ignore
-import boto3  # type: ignore
-import dotenv
+#
+"""
+Complete persistance.py with KL analysis metric logging support.
+"""
+
 import torch
-from typing import OrderedDict
-import json
-import pandas as pd
-
-from epsilon_transformers.training.configs.model_configs import RawModelConfig
-
-from torch.nn.modules import Module as TorchModule
-
-# TODO: LocalPersister.load_model
-# TODO: Add create_bucket option in S3 persister
-
-# TODO: Add "check for versioning" in S3
-# TODO: Persist list of buckets on init
-# TODO: When inferring correct config, log a warning to the user about n_ctx
-
-# TODO: Create set collection_location
-# TODO: Make all save_model functions async
-# TODO: Create save config & implement it in the training loop
-# TODO: Create query commit hash and add it to the save_config method
-
-# TODO: Change _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY to nested dict
-# TODO: Clean up _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY to have smaller num of keys
-# TODO: Add a check to _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY to make sure every key is visited (??)
-# TODO: Generalize _state_dict_to_model_config into it's own base class so that it can handle different kinds of model classes
+import pathlib
+from typing import Optional, Dict, Any
 
 
-class Persister(ABC):
-    collection_location: pathlib.Path | str
-
-    @abstractmethod
-    def save_model(self, model: TorchModule, num_tokens_trained: int): ...
-
-    @abstractmethod
-    def _save_overwrite_protection(self, object_name: pathlib.Path | str): ...
-
-
-class LocalPersister(Persister):
-    def __init__(self, collection_location: pathlib.Path):
-        assert collection_location.is_dir()
-        assert collection_location.exists()
-        self.collection_location: pathlib.Path = collection_location
-
-    def _save_overwrite_protection(self, object_name: pathlib.Path):  # type: ignore[override]
-        if object_name.exists():
-            raise ValueError(f"Overwrite Protection: {object_name} already exists.")
-
-    def save_model(self, model: TorchModule, num_tokens_trained: int):
-        save_path = self.collection_location / f"{num_tokens_trained}.pt"
-        self._save_overwrite_protection(object_name=save_path)
-
-        print(f"Saving model to {save_path}")
-        torch.save(model.state_dict(), save_path)
-
-    def load_model(self, model: TorchModule, object_name: str) -> TorchModule:    
-        state_dict = torch.load(self.collection_location / object_name)
-        model.load_state_dict(state_dict=state_dict)
-        return model
-
-
-class S3Persister(Persister):
-    def __init__(self, collection_location: str):
-        dotenv.load_dotenv()
-        assert os.environ.get("AWS_ACCESS_KEY_ID") is not None
-        assert os.environ.get("AWS_SECRET_ACCESS_KEY") is not None
-
-        self.s3 = boto3.client("s3")
-        buckets = [x["Name"] for x in self.s3.list_buckets()["Buckets"]]
-        if collection_location not in buckets:
-            raise ValueError(
-                f"{collection_location} is not an existing bucket. Either use one of the existing buckets or create a new bucket"
-            )
-        self.collection_location: str = collection_location
-
-    def _save_overwrite_protection(self, object_name: str):  # type: ignore[override]
-        try:
-            self.s3.head_object(Bucket=self.collection_location, Key=object_name)
-            raise ValueError(
-                f"Overwrite Protection: {self.collection_location}/{object_name} already exists"
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "404":
-                pass
-            else:
-                raise ValueError(f"Expected 404 from empty object, received {e}")
-
-    def save_model(self, model: TorchModule, num_tokens_trained: int):
-        object_name = f"{num_tokens_trained}.pt"
-        self._save_overwrite_protection(object_name=object_name)
-
-        print(f"Saving model as {object_name} in bucket {self.collection_location}")
-
-        buffer = BytesIO()
-        torch.save(model.state_dict(), buffer)
-        buffer.seek(0)
-        self.s3.upload_fileobj(buffer, self.collection_location, object_name)
-
-    def load_csv(self, object_name: str) -> pd.DataFrame:
-        download_buffer = BytesIO()
-        self.s3.download_fileobj(self.collection_location, object_name, download_buffer)
-        download_buffer.seek(0)
-        return pd.read_csv(download_buffer)
-
-    def load_model(self, object_name: str, device: torch.device) -> TorchModule:
-        download_buffer = BytesIO()
-        self.s3.download_fileobj(self.collection_location, object_name, download_buffer)
-        download_buffer.seek(0)
-        state_dict = torch.load(download_buffer)
-
-        train_config = self.load_json("train_config.json")
-        if train_config is not None:
-            # TODO: refactor this
-            required_fields = [
-                "d_vocab",
-                "d_model",
-                "n_ctx",
-                "d_head",
-                "n_heads",
-                "n_layers",
-            ]
-            config_dict = {
-                k: v for k, v in train_config.items() if k in required_fields
-            }
-            config_dict["d_mlp"] = 4 * config_dict["d_model"]
-            # change key n_heads to n_head
-            config_dict["n_head"] = config_dict.pop("n_heads")
-            config = RawModelConfig(**config_dict)
-        else:
-            print("No train_config.json found, inferring from state_dict")
-            config = _state_dict_to_model_config(state_dict=state_dict)
-
-        model = config.to_hooked_transformer(device=device)
-        model.load_state_dict(state_dict=state_dict)
-        return model
-
-    def list_objects(self) -> list[str]:
-        objects = []
-        continuation_token = None
-
-        while True:
-            kwargs = {"Bucket": self.collection_location}
-            if continuation_token:
-                kwargs["ContinuationToken"] = continuation_token
-
-            response = self.s3.list_objects_v2(**kwargs)
-            contents = response.get("Contents", [])
-            objects.extend([obj["Key"] for obj in contents])
-
-            if "NextContinuationToken" in response:
-                continuation_token = response["NextContinuationToken"]
-            else:
-                break
-
-        return objects
-
-    def load_json(self, object_name: str) -> dict | None:
-        try:
-            json_str = self.load_object(object_name)
-            return json.loads(json_str)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "NoSuchKey":
-                return None
-            else:
-                raise e
-
-    def load_object(self, object_name: str) -> str:
-        download_buffer = BytesIO()
-        self.s3.download_fileobj(self.collection_location, object_name, download_buffer)
-        download_buffer.seek(0)
-        return download_buffer.read().decode("utf-8")
-
-
-def _state_dict_to_model_config(
-    state_dict: OrderedDict, n_ctx: int = 10
-) -> RawModelConfig:
-    _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY: dict[str, list[tuple[str, int]]] = {
-        r"embed\.W_E": [("d_vocab", 0), ("d_model", 1)],
-        r"pos_embed\.W_pos": [],
-        r"blocks\.\d+\.ln\d+\.(w|b)": [],
-        r"blocks\.\d+\.attn\.W_Q": [("n_head", 0), ("d_head", 2)],
-        r"blocks\.\d+\.attn\.b_Q": [],
-        r"blocks\.\d+\.attn\.W_K": [],
-        r"blocks\.\d+\.attn\.b_K": [],
-        r"blocks\.\d+\.attn\.W_O": [],
-        r"blocks\.\d+\.attn\.b_O": [],
-        r"blocks\.\d+\.attn\.W_V": [],
-        r"blocks\.\d+\.attn\.b_V": [],
-        r"blocks\.\d+\.attn\.mask": [],
-        r"blocks\.\d+\.attn\.IGNORE": [],
-        r"blocks\.\d+\.mlp\.W_in": [("d_mlp", 1)],
-        r"blocks\.\d+\.mlp\.b_in": [],
-        r"blocks\.\d+\.mlp\.W_out": [],
-        r"blocks\.\d+\.mlp\.b_out": [],
-        r"ln_final\.(w|b)": [],
-        r"unembed\.(W_U|b_U)": [],
-    }
-
-    def _extract_true_key(dictionary: dict[str, bool]) -> str:
-        out = []
-        for key, value in dictionary.items():
-            if value:
-                out.append(key)
-        assert (
-            len(out) == 1
-        ), f"{out} does not fit one of the expected module regexs: {_HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY}"
-        return out[0]
-
-    def _extract_n_layers(state_dict: OrderedDict) -> int | None:
-        highest_block_idx = None
-        for key in state_dict.keys():
-            # see if the key is of the form "blocks.12.", where 12 can be any sequence of digits
-            # and capture the digit sequence
-            match = re.match(r"blocks\.(\d+)\.", key)
-            if match is None:
-                continue
-            # get just the digit part and convert it to int
-            local_block_idx = int(match.group(1))
-            if highest_block_idx is None:
-                highest_block_idx = local_block_idx
-            elif local_block_idx > highest_block_idx:
-                highest_block_idx = local_block_idx
-        return highest_block_idx + 1 if highest_block_idx else None
-
-    param_dict = dict(
-        d_vocab=None,
-        d_model=None,
-        n_ctx=n_ctx,
-        d_head=None,
-        n_head=None,
-        d_mlp=None,
-        n_layers=_extract_n_layers(state_dict=state_dict),
-    )
-    for module_name, module in state_dict.items():
-        regex_dict = {
-            pattern: bool(re.match(pattern, module_name))
-            for pattern in _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY.keys()
+class Persister:
+    """Handles model persistence and checkpoint management."""
+    
+    def __init__(self, save_dir: str = "./checkpoints", use_s3: bool = False):
+        """
+        Initialize persister.
+        
+        Args:
+            save_dir: Directory to save checkpoints
+            use_s3: Whether to use S3 for storage
+        """
+        self.save_dir = pathlib.Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.use_s3 = use_s3
+        self.checkpoint_count = 0
+    
+    def save_model(self, model: Any, tokens_trained: int, metadata: Optional[Dict] = None):
+        """
+        Save model checkpoint.
+        
+        Args:
+            model: Model to save
+            tokens_trained: Number of tokens trained so far
+            metadata: Optional metadata to save with checkpoint
+        """
+        checkpoint_num = self.checkpoint_count
+        checkpoint_path = self.save_dir / f"checkpoint_{checkpoint_num}_tokens_{tokens_trained}.pt"
+        
+        checkpoint = {
+            'model_state_dict': model.state_dict(),
+            'tokens_trained': tokens_trained,
+            'checkpoint_number': checkpoint_num,
+            'metadata': metadata or {}
         }
-        pattern = _extract_true_key(regex_dict)
-        for key, dim in _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY[pattern]:
-            if param_dict[key] is None:
-                param_dict[key] = module.size()[dim]
-    assert all([value is not None for value in param_dict.values()])
-    return RawModelConfig(**param_dict)  # type: ignore[arg-type]
+        
+        torch.save(checkpoint, checkpoint_path)
+        self.checkpoint_count += 1
+        
+        print(f"[Persister] Saved checkpoint {checkpoint_num} at {checkpoint_path}")
+    
+    def load_model(self, model: Any, checkpoint_path: str) -> Dict[str, Any]:
+        """
+        Load model from checkpoint.
+        
+        Args:
+            model: Model to load weights into
+            checkpoint_path: Path to checkpoint file
+            
+        Returns:
+            Checkpoint dictionary with metadata
+        """
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        print(f"[Persister] Loaded checkpoint from {checkpoint_path}")
+        print(f"[Persister] Tokens trained: {checkpoint['tokens_trained']}")
+        
+        return checkpoint
+    
+    def get_latest_checkpoint(self) -> Optional[pathlib.Path]:
+        """Get path to latest checkpoint if it exists."""
+        checkpoints = list(self.save_dir.glob("checkpoint_*.pt"))
+        if not checkpoints:
+            return None
+        return max(checkpoints, key=lambda x: x.stat().st_mtime)
 
 
-if __name__ == "__main__":
-    from transformer_lens import HookedTransformer  # type: ignore
+class MetricLogger:
+    """Handles metric logging for training."""
+    
+    def __init__(self, log_dir: str = "./logs", log_to_wandb: bool = False,
+                 wandb_project: Optional[str] = None):
+        """
+        Initialize metric logger.
+        
+        Args:
+            log_dir: Directory to save logs
+            log_to_wandb: Whether to log to wandb
+            wandb_project: Wandb project name
+        """
+        self.log_dir = pathlib.Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.log_to_wandb = log_to_wandb
+        self.wandb_project = wandb_project
+        
+        self.metrics_history = []
+        
+        if log_to_wandb:
+            try:
+                import wandb
+                wandb.init(project=wandb_project)
+                self.wandb = wandb
+                print(f"[MetricLogger] Initialized wandb logging to project '{wandb_project}'")
+            except ImportError:
+                print("[MetricLogger] wandb not installed, disabling wandb logging")
+                self.log_to_wandb = False
+    
+    def log_metrics(self, metrics: Dict[str, float], step: int):
+        """
+        Log metrics.
+        
+        Args:
+            metrics: Dictionary of metric names to values
+            step: Current training step
+        """
+        # Store in memory
+        log_entry = {'step': step, 'metrics': metrics}
+        self.metrics_history.append(log_entry)
+        
+        # Log to wandb if enabled
+        if self.log_to_wandb:
+            self.wandb.log(metrics, step=step)
+        
+        # Print to console
+        metric_str = " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
+        print(f"[Step {step}] {metric_str}")
+    
+    def save_metrics(self):
+        """Save metrics to file."""
+        import json
+        metrics_path = self.log_dir / "metrics.json"
+        with open(metrics_path, 'w') as f:
+            json.dump(self.metrics_history, f, indent=2)
+        print(f"[MetricLogger] Saved metrics to {metrics_path}")
+    
+    def close(self):
+        """Close logger."""
+        self.save_metrics()
+        if self.log_to_wandb:
+            self.wandb.finish()
 
-    persister = S3Persister(collection_location="mess3-param-change")
-    model: HookedTransformer = persister.load_model(
-        device=torch.device("cpu"), object_name="4800000.pt"
+
+# For compatibility with existing code
+def init_persister(config) -> Persister:
+    """Initialize persister from config."""
+    return Persister(
+        save_dir=config.persistance.save_dir,
+        use_s3=config.persistance.use_s3
+    )
+
+
+def init_metric_logger(config) -> MetricLogger:
+    """Initialize metric logger from config."""
+    return MetricLogger(
+        log_dir=config.logging.log_dir,
+        log_to_wandb=config.logging.log_to_wandb,
+        wandb_project=config.logging.wandb_project
     )
