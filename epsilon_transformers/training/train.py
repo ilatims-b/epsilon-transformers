@@ -209,10 +209,17 @@ def _evaluate_log_and_persist(
     )
     
     if verbose:
-        print(f"[Step {tokens_trained}] Metrics: {log.metrics}")
+        print(f"[Step {tokens_trained}] Training loss: {log.train_loss:.6f}")  # ✅
+
+    metadata = {
+        "train_loss": log.train_loss,
+        "test_loss": log.test_loss,
+    }
+    persister.save_model(model, tokens_trained, metadata=metadata) 
+    #     print(f"[Step {tokens_trained}] Metrics: {log.metrics}")
     
-    log.persist()
-    persister.save_model(model, tokens_trained, metadata=log.metrics)
+    # log.persist()
+    # persister.save_model(model, tokens_trained, metadata=log.metrics)
     log.reset()
 
 
@@ -233,7 +240,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     # Initialize model and optimizer
     model = config.model.to_hooked_transformer(device=device, seed=config.seed)
     optimizer = config.optimizer.from_model(model=model, device=device)
-    
+    print(f"[Training] Creating dataloaders...")
     # Create data loaders
     train_dataloader = config.dataset.to_dataloader(
         sequence_length=model.cfg.n_ctx, train=True
@@ -241,7 +248,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     eval_dataloader = config.dataset.to_dataloader(
         sequence_length=model.cfg.n_ctx, train=False
     )
-    
+    print(f"[Training] Dataloaders created")
     # Initialize persistence
     persister = _setup_persister(config)
     
