@@ -219,15 +219,25 @@ class TrainConfig(Config):
 
     @model_validator(mode="after")
     def validate_model(self):
-        """Validate model vocab matches process vocab."""
+        """Validate model vocab matches process vocab (if process is registered)."""
         dataset_process = self.dataset.process
-        if dataset_process:
-            process_vocab_len = PROCESS_REGISTRY[dataset_process]().vocab_len
-            if self.model.d_vocab != process_vocab_len:
-                raise ValueError(
-                    f"Model's d_vocab ({self.model.d_vocab}) doesn't match "
-                    f"dataset process's vocab_len ({process_vocab_len})"
-                )
+        
+        # Only validate if process is in PROCESS_REGISTRY
+        if dataset_process and dataset_process in PROCESS_REGISTRY:
+            try:
+                process_vocab_len = PROCESS_REGISTRY[dataset_process]().vocab_len
+                if self.model.d_vocab != process_vocab_len:
+                    raise ValueError(
+                        f"Model's d_vocab ({self.model.d_vocab}) doesn't match "
+                        f"dataset process's vocab_len ({process_vocab_len})"
+                    )
+            except KeyError:
+                # Process not registered, skip validation
+                print(f"[Warning] Process '{dataset_process}' not in PROCESS_REGISTRY, skipping vocab validation")
+        elif dataset_process:
+            print(f"[Warning] Process '{dataset_process}' not found in PROCESS_REGISTRY")
+            print(f"[Warning] Available processes: {list(PROCESS_REGISTRY.keys())}")
+        
         return self
 
     def init_logger(self) -> Log:

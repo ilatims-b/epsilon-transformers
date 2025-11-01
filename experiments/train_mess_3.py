@@ -49,7 +49,7 @@ optimizer_config = OptimizerConfig(
 # ============================================================================
 
 dataset_config = ProcessDatasetConfig(
-    process='mess3',
+    process='Mess3',
     process_params={'x': 0.5, 'a': 0.85},
     batch_size=64,
     num_tokens=5000,
