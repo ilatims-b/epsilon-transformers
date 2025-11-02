@@ -130,22 +130,7 @@ def _compute_validation_metrics(
     all_logits = []
     all_sequences = []
     total_loss = 0.0
-    num_batches = 0
-
-    if ngram_analyzer is not None:
-        eval_sequences = []
-        for batch in eval_dataloader:
-            if isinstance(batch, tuple):
-                sequences = batch[0]
-            elif isinstance(batch, dict):
-                sequences = batch.get('input_ids', batch.get('sequences', batch[0]))
-            else:
-                sequences = batch
-            eval_sequences.append(sequences)
-        eval_sequences_tensor = torch.cat(eval_sequences, dim=0)
-        ngram_analyzer.build_from_sequences(eval_sequences_tensor)
-        print(f"[KL Analysis] N-gram analyzer (rebuilt) on current eval dataset")
-
+    num_batches = 0        
     with torch.no_grad():
         # for input_data, target_data in tqdm(eval_dataloader, desc="Eval Loop"):
         #     input_data, target_data = input_data.to(device), target_data.to(device)
@@ -184,7 +169,8 @@ def _compute_validation_metrics(
     if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits) > 0:
         all_logits_tensor = torch.cat(all_logits, dim=0)
         all_sequences_tensor = torch.cat(all_sequences, dim=0)
-        
+        ngram_analyzer.build_from_sequences(all_sequences_tensor)
+        print(f"[KL Analysis] N-gram analyzer (rebuilt) on current eval dataset")
         # N-gram KL divergences
         if ngram_analyzer is not None:
             ngram_metrics = compute_ngram_kl_divergence(
@@ -311,6 +297,28 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
             batch_idx=batch_idx,
         )
         
+        # Checkpoint and evaluation
+        if _check_if_action_batch(
+            perform_action_every_n_tokens=config.persistance.checkpoint_every_n_tokens,
+            batch_size=config.dataset.batch_size,
+            batch_idx=batch_idx,
+            sequence_len=model.cfg.n_ctx,
+        ):
+            model.eval()
+            _evaluate_log_and_persist(
+                persister=persister,
+                model=model,
+                log=log,
+                verbose=config.verbose,
+                device=device,
+                dataset_config=config.dataset,
+                tokens_trained=tokens_trained_so_far,
+                ngram_analyzer=ngram_analyzer,
+                markov_analyzer=markov_analyzer,
+                val_process=val_process,
+                return_per_position=return_per_position,
+            )
+            model.train()
     
     # Final evaluation
     model.eval()
