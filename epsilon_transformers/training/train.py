@@ -26,6 +26,19 @@ from epsilon_transformers.training.configs.training_configs import (
 from epsilon_transformers.analysis.kl_analysis import MarkovKLAnalyzer, compute_markov_kl_divergence
 from epsilon_transformers.analysis.ngram_analysis import NGramAnalyzer, compute_ngram_kl_divergence
 
+from epsilon_transformers.process import Process
+
+from epsilon_transformers.process.processes import PROCESS_REGISTRY
+
+def get_process_object(process_name: str, process_params: dict):
+    """Return an instantiated Process object given name and parameters."""
+    process_class = PROCESS_REGISTRY.get(process_name, None)
+    if process_class is None:
+        raise ValueError(
+            f"{process_name!r} is not a recognized process. "
+            f"Available processes: {list(PROCESS_REGISTRY.keys())}"
+        )
+    return process_class(**process_params)
 
 def _set_random_seed(seed: int):
     """Set random seeds for reproducibility."""
@@ -146,7 +159,7 @@ def _compute_validation_metrics(
             markov_metrics = compute_markov_kl_divergence(
                 all_logits_tensor,
                 all_sequences_tensor,
-                val_process,
+                process=val_process,
                 analyzer=markov_analyzer,
                 return_per_position=return_per_position,
             )
@@ -228,7 +241,8 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     persister = _setup_persister(config)
     
     # Initialize KL analyzers
-    val_process = getattr(config.dataset, 'process', None)
+    # val_process = getattr(config.dataset, 'process', None)
+    val_process = get_process_object(config.dataset.process, config.dataset.process_params)
     ngram_analyzer, markov_analyzer = _setup_kl_analyzers(
         config=config,
         vocab_size=model.cfg.d_vocab)
