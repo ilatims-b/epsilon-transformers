@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from typing import Tuple, Optional
+from torch.utils.data import DataLoader
 
 from epsilon_transformers.persistence import Persister
 from epsilon_transformers.training.configs.training_configs import (
@@ -182,7 +183,7 @@ def _compute_validation_metrics(
             )
             
             for metric_name, metric_value in ngram_metrics.items():
-                log.update_metrics("test", metric_name=metric_name, value=metric_value)
+                log.update_metrics("test", metric_name=metric_name, loss=metric_value)
         
         # Markov KL divergence
         if markov_analyzer is not None and val_process is not None:
@@ -195,7 +196,7 @@ def _compute_validation_metrics(
             )
             
             for metric_name, metric_value in markov_metrics.items():
-                log.update_metrics("test", metric_name=metric_name, value=metric_value)
+                log.update_metrics("test", metric_name=metric_name, loss=metric_value)
     
     return log
 

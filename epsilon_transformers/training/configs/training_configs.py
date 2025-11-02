@@ -140,6 +140,9 @@ class Log:
     train_loss: float | None
     test_loss: float | None
     config: "LoggingConfig"
+    
+    metrics: dict[str, dict[str, float]] = field(default_factory=lambda: {"train": {}, "test": {}})
+
 
     def reset(self):
         if self.config.train_loss:
@@ -152,15 +155,24 @@ class Log:
         else:
             self.test_loss = None
 
-    def update_metrics(self, train_or_test: Literal["train", "test"], loss: float):
-        if train_or_test == "train" and self.config.train_loss:
-            assert self.train_loss is not None
-            self.train_loss += loss
-        elif train_or_test == "test" and self.config.test_loss:
-            assert self.test_loss is not None
-            self.test_loss += loss
-        else:
-            raise ValueError(f"Invalid train_or_test: {train_or_test}")
+        self.metrics = {"train": {}, "test": {}}    
+
+    def update_metrics(self, train_or_test: Literal["train", "test"], loss: float, metric_name: Optional[str] = 'loss'):
+        if metric_name == 'loss':
+            if train_or_test == "train" and self.config.train_loss:
+                assert self.train_loss is not None
+                self.train_loss += loss
+            elif train_or_test == "test" and self.config.test_loss:
+                assert self.test_loss is not None
+                self.test_loss += loss
+            else:
+                raise ValueError(f"Invalid train_or_test: {train_or_test}")
+            
+        if train_or_test not in self.metrics:
+            self.metrics[train_or_test] = {}
+        if metric_name not in self.metrics[train_or_test]:
+            self.metrics[train_or_test][metric_name] = 0.0
+        self.metrics[train_or_test][metric_name] += float(loss)   
 
     def persist(self):
         if self.config.wandb:
@@ -171,6 +183,15 @@ class Log:
                     if v is not None and not isinstance(v, LoggingConfig)
                 }
             )
+
+        if self.metrics:
+                flat = {}
+                for split, md in self.metrics.items():
+                    for name, val in md.items():
+                        flat[f"{split}/{name}"] = val
+                if flat:
+                    wandb.log(flat)
+    
         if self.config.local is not None:
             raise NotImplementedError
 
