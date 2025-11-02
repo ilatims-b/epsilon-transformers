@@ -117,57 +117,25 @@ class MarkovKLAnalyzer:
         device = model_logits.device
         
         # Store KL values at each position
-        kl_at_position = {}
+        current_states=np.tile(self._get_initial_state(process),(batch_size,1))#(batch_size,num_states)
+        kl_per_position = torch.zeros(seq_len - 1, device=device)
         kl_all_values = []
+        for pos in range(1,seq_len):
+            emission_probs=np.stack([self._compute_emission_probabilities(process,current_states[b]) for b in range(batch_size)])
+            gt_dist=torch.from_numpy(emission_probs).float().to(device)
+            gt_dist=gt_dist/(gt_dist.sum(dim=1,keepdim=True))
+            model_probs=F.softmax(model_logits[:,pos,:],dim=1)
+            kl_batch=torch.sum(gt_dist*(torch.log(gt_dist+1e-10)-torch.log(model_probs+1e-10)),dim=-1)
+            kl_per_position[pos-1]=kl_batch.mean()
+            kl_all_values.append(kl_batch.detach().cpu())
+            emissions=sequences[:,pos-1].cpu().numpy()#(batch,)
+            next_states = np.stack([self._compute_next_state(process, current_states[b], int(emissions[b]))
+            for b in range(batch_size)])
+            current_states = next_states  
+        kl_all_values = torch.cat(kl_all_values, dim=0)
+
         
-        # Process each sample in batch
-        for batch_idx in range(batch_size):
-            seq = sequences[batch_idx].cpu().numpy()
-            
-            # Initialize with steady state
-            current_state = self._get_initial_state(process)
-            
-            # Process each position in sequence
-            for pos in range(1, seq_len):
-                # Get ground truth emission probabilities for current state
-                emission_probs = self._compute_emission_probabilities(process, current_state)
-                
-                # Convert to tensor
-                gt_dist = torch.from_numpy(emission_probs).float()
-                gt_dist = gt_dist / (gt_dist.sum() + 1e-10)  # Ensure normalized
-                gt_dist = gt_dist.to(device)
-                
-                # Get model probabilities for next token
-                model_logit = model_logits[batch_idx, pos, :]
-                model_probs = F.softmax(model_logit, dim=0)
-                
-                # Compute KL divergence: KL(ground_truth || model)
-                # KL(P||Q) = sum(P * (log(P) - log(Q)))
-                kl = torch.sum(
-                    gt_dist * (torch.log(gt_dist + 1e-10) - torch.log(model_probs + 1e-10))
-                )
-                
-                kl_value = kl.item()
-                
-                # Store at this position
-                if pos not in kl_at_position:
-                    kl_at_position[pos] = []
-                
-                kl_at_position[pos].append(kl_value)
-                kl_all_values.append(kl_value)
-                
-                # Update state based on observed token at position pos-1
-                # (we're predicting token at pos, so we use tokens up to pos-1)
-                observed_token = int(seq[pos - 1])
-                current_state = self._compute_next_state(process, current_state, observed_token)
-        
-        # Average KL at each position across batch
-        kl_per_position = torch.zeros(seq_len - 1)
-        for pos in range(1, seq_len):
-            if pos in kl_at_position and len(kl_at_position[pos]) > 0:
-                kl_per_position[pos - 1] = np.mean(kl_at_position[pos])
-        
-        return kl_per_position, torch.tensor(kl_all_values, device='cpu')
+        return kl_per_position, kl_all_values
 
 
 def compute_markov_kl_divergence(model_logits: torch.Tensor,
