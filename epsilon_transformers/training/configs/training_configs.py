@@ -65,29 +65,6 @@ class PersistanceConfig(Config):
         return Persister(save_dir=save_dir, use_s3=use_s3) 
 
 
-# class ProcessDatasetConfig(Config):
-#     process: str
-#     process_params: dict[str, float]
-#     batch_size: int
-#     num_tokens: int
-#     test_split: float
-
-#     def to_dataloader(self, sequence_length: int, train: bool) -> DataLoader:
-#         dataset = ProcessDataset(
-#             process_name=self.process,
-#             process_params=self.process_params,
-#             sequence_length=sequence_length,
-#             num_samples=(
-#                 self.num_tokens
-#                 if train
-#                 else math.floor(self.num_tokens * self.test_split)
-#             ),
-#         )
-#         return DataLoader(
-#             dataset=dataset,
-#             collate_fn=process_dataset_collate_fn,
-#             batch_size=self.batch_size,
-#         )
 class ProcessDatasetConfig(Config):
     """Dataset configuration."""
     process: str
@@ -96,14 +73,6 @@ class ProcessDatasetConfig(Config):
     sequence_length: int
     num_tokens: int
     test_split: float
-
-    # @field_validator("sequence_length")
-    # @classmethod
-    # def validate_sequence_length(cls, v):
-    #     """Validate sequence length."""
-    #     if v <= 0:
-    #         raise ValueError("sequence_length must be > 0")
-    #     return v
 
     @field_validator("batch_size")
     @classmethod

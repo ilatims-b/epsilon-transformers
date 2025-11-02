@@ -81,36 +81,6 @@ def _setup_kl_analyzers(
     if config.kl_analysis.markov_kl_analysis.enabled:
         markov_analyzer = MarkovKLAnalyzer(vocab_size=vocab_size)
     
-    # ngram_enabled = config.kl_analysis.ngram_analysis.enabled
-    # markov_enabled = config.kl_analysis.markov_kl_analysis.enabled
-    
-    # # Initialize N-gram analyzer
-    # if ngram_enabled:
-    #     n_values = config.kl_analysis.ngram_analysis.n_values
-    #     ngram_analyzer = NGramAnalyzer(vocab_size=vocab_size, n_grams=n_values)
-    #     eval_dataloader = dataset_config.to_dataloader(
-    #     sequence_length=dataset_config.sequence_length, train=False
-    # )
-    #     # Build n-gram frequencies from eval data
-    #     eval_sequences = []
-    #     for batch in eval_dataloader:
-    #         if isinstance(batch, tuple):
-    #             sequences = batch[0]
-    #         elif isinstance(batch, dict):
-    #             sequences = batch.get('input_ids', batch.get('sequences', batch[0]))
-    #         else:
-    #             sequences = batch
-    #         eval_sequences.append(sequences)
-        
-    #     eval_sequences_tensor = torch.cat(eval_sequences, dim=0)
-    #     ngram_analyzer.build_from_sequences(eval_sequences_tensor)
-    #     print(f"[KL Analysis] N-gram analyzer initialized with n_values={n_values}")
-    
-    # # Initialize Markov analyzer
-    # if markov_enabled and val_process is not None:
-    #     markov_analyzer = MarkovKLAnalyzer(vocab_size=vocab_size)
-    #     print("[KL Analysis] Markov KL analyzer initialized")
-    
     return ngram_analyzer, markov_analyzer
 
 
@@ -132,21 +102,7 @@ def _compute_validation_metrics(
     total_loss = 0.0
     num_batches = 0        
     with torch.no_grad():
-        # for input_data, target_data in tqdm(eval_dataloader, desc="Eval Loop"):
-        #     input_data, target_data = input_data.to(device), target_data.to(device)
-        #     loss = model(input_data, return_type="loss")
-        #     log.update_metrics("test", loss.item())
         for batch in tqdm(eval_dataloader, desc="Eval Loop", leave=False):
-            # if isinstance(batch, tuple):
-            #     input_data, target_data = batch
-                # print("is tuple")
-            # elif isinstance(batch, dict):
-            #     input_data = batch.get('input_ids', batch.get('sequences'))
-            #     target_data = batch.get('target_ids', batch.get('labels', input_data))
-            #     print("is dict")
-            # else:
-            #     input_data = batch
-            #     target_data = batch
             input_data, target_data= batch
             input_data = input_data.to(device)
             
