@@ -52,10 +52,10 @@ optimizer_config = OptimizerConfig(
 dataset_config = ProcessDatasetConfig(
     process='Mess3',
     process_params={'x': 0.5, 'a': 0.85},
-    batch_size=64,
-    num_tokens=100000,
+    batch_size=16,
+    num_tokens=10000,
     sequence_length=10,
-    test_split=0.1
+    test_split=0.0001
 )
 
 
@@ -92,12 +92,12 @@ logging_config = LoggingConfig(
 
 kl_analysis_config = KLAnalysisConfig(
     ngram_analysis=NGramAnalysisConfig(
-        enabled=False,
+        enabled=True,
         n_values=[1, 2, 3],
         return_per_position=True,
     ),
     markov_kl_analysis=MarkovKLAnalysisConfig(
-        enabled=False,
+        enabled=True,
         return_per_position=True,
     ),
 )

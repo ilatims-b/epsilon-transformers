@@ -1,14 +1,4 @@
-"""
-N-gram frequency analysis and KL divergence computation for validation sets.
 
-This module computes n-gram probabilities from a dataset and calculates the KL divergence
-between model predictions and n-gram baselines. Similar to Kaggle metamsp analysis but adapted
-for epsilon-transformers where data generation is done on-the-fly.
-
-Returns both:
-- Per-position KL divergences: Average KL at each position in sequence
-- Overall average KL divergence: Mean KL across all positions
-"""
 
 import torch
 import torch.nn.functional as F

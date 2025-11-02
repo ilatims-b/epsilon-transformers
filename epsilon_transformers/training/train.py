@@ -20,6 +20,7 @@ from epsilon_transformers.persistence import Persister
 from epsilon_transformers.training.configs.training_configs import (
     TrainConfig,
     Log,
+    ProcessDatasetConfig,
 )
 from epsilon_transformers.analysis.kl_analysis import MarkovKLAnalyzer, compute_markov_kl_divergence
 from epsilon_transformers.analysis.ngram_analysis import NGramAnalyzer, compute_ngram_kl_divergence
@@ -62,8 +63,9 @@ def _setup_persister(config: TrainConfig):
 def _setup_kl_analyzers(
     config: TrainConfig,
     vocab_size: int,
-    eval_dataloader,
-    val_process: Optional[object] = None,
+    # eval_dataloader,
+    # val_process: Optional[object] = None,
+    # dataset_config: ProcessDatasetConfig = None,
 ) -> Tuple[Optional[NGramAnalyzer], Optional[MarkovKLAnalyzer]]:
     """Initialize KL divergence analyzers if enabled."""
     ngram_analyzer = None
@@ -72,41 +74,49 @@ def _setup_kl_analyzers(
     # Check config for KL analysis enabled
     if not hasattr(config, 'kl_analysis'):
         return None, None
-    
-    ngram_enabled = config.kl_analysis.ngram_analysis.enabled
-    markov_enabled = config.kl_analysis.markov_kl_analysis.enabled
-    
-    # Initialize N-gram analyzer
-    if ngram_enabled:
+    if config.kl_analysis.ngram_analysis.enabled:
         n_values = config.kl_analysis.ngram_analysis.n_values
         ngram_analyzer = NGramAnalyzer(vocab_size=vocab_size, n_grams=n_values)
-        
-        # Build n-gram frequencies from eval data
-        eval_sequences = []
-        for batch in eval_dataloader:
-            if isinstance(batch, tuple):
-                sequences = batch[0]
-            elif isinstance(batch, dict):
-                sequences = batch.get('input_ids', batch.get('sequences', batch[0]))
-            else:
-                sequences = batch
-            eval_sequences.append(sequences)
-        
-        eval_sequences_tensor = torch.cat(eval_sequences, dim=0)
-        ngram_analyzer.build_from_sequences(eval_sequences_tensor)
-        print(f"[KL Analysis] N-gram analyzer initialized with n_values={n_values}")
     
-    # Initialize Markov analyzer
-    if markov_enabled and val_process is not None:
+    if config.kl_analysis.markov_kl_analysis.enabled:
         markov_analyzer = MarkovKLAnalyzer(vocab_size=vocab_size)
-        print("[KL Analysis] Markov KL analyzer initialized")
+    
+    # ngram_enabled = config.kl_analysis.ngram_analysis.enabled
+    # markov_enabled = config.kl_analysis.markov_kl_analysis.enabled
+    
+    # # Initialize N-gram analyzer
+    # if ngram_enabled:
+    #     n_values = config.kl_analysis.ngram_analysis.n_values
+    #     ngram_analyzer = NGramAnalyzer(vocab_size=vocab_size, n_grams=n_values)
+    #     eval_dataloader = dataset_config.to_dataloader(
+    #     sequence_length=dataset_config.sequence_length, train=False
+    # )
+    #     # Build n-gram frequencies from eval data
+    #     eval_sequences = []
+    #     for batch in eval_dataloader:
+    #         if isinstance(batch, tuple):
+    #             sequences = batch[0]
+    #         elif isinstance(batch, dict):
+    #             sequences = batch.get('input_ids', batch.get('sequences', batch[0]))
+    #         else:
+    #             sequences = batch
+    #         eval_sequences.append(sequences)
+        
+    #     eval_sequences_tensor = torch.cat(eval_sequences, dim=0)
+    #     ngram_analyzer.build_from_sequences(eval_sequences_tensor)
+    #     print(f"[KL Analysis] N-gram analyzer initialized with n_values={n_values}")
+    
+    # # Initialize Markov analyzer
+    # if markov_enabled and val_process is not None:
+    #     markov_analyzer = MarkovKLAnalyzer(vocab_size=vocab_size)
+    #     print("[KL Analysis] Markov KL analyzer initialized")
     
     return ngram_analyzer, markov_analyzer
 
 
 def _compute_validation_metrics(
     model,
-    eval_dataloader,
+    eval_dataloader:DataLoader,
     device: torch.device,
     log: Log,
     ngram_analyzer: Optional[NGramAnalyzer] = None,
@@ -121,18 +131,38 @@ def _compute_validation_metrics(
     all_sequences = []
     total_loss = 0.0
     num_batches = 0
-    
-    with torch.no_grad():
-        for batch in tqdm(eval_dataloader, desc="Eval Loop", leave=False):
+
+    if ngram_analyzer is not None:
+        eval_sequences = []
+        for batch in eval_dataloader:
             if isinstance(batch, tuple):
-                input_data, target_data = batch
+                sequences = batch[0]
             elif isinstance(batch, dict):
-                input_data = batch.get('input_ids', batch.get('sequences'))
-                target_data = batch.get('target_ids', batch.get('labels', input_data))
+                sequences = batch.get('input_ids', batch.get('sequences', batch[0]))
             else:
-                input_data = batch
-                target_data = batch
-            
+                sequences = batch
+            eval_sequences.append(sequences)
+        eval_sequences_tensor = torch.cat(eval_sequences, dim=0)
+        ngram_analyzer.build_from_sequences(eval_sequences_tensor)
+        print(f"[KL Analysis] N-gram analyzer (rebuilt) on current eval dataset")
+
+    with torch.no_grad():
+        # for input_data, target_data in tqdm(eval_dataloader, desc="Eval Loop"):
+        #     input_data, target_data = input_data.to(device), target_data.to(device)
+        #     loss = model(input_data, return_type="loss")
+        #     log.update_metrics("test", loss.item())
+        for batch in tqdm(eval_dataloader, desc="Eval Loop", leave=False):
+            # if isinstance(batch, tuple):
+            #     input_data, target_data = batch
+                # print("is tuple")
+            # elif isinstance(batch, dict):
+            #     input_data = batch.get('input_ids', batch.get('sequences'))
+            #     target_data = batch.get('target_ids', batch.get('labels', input_data))
+            #     print("is dict")
+            # else:
+            #     input_data = batch
+            #     target_data = batch
+            input_data, target_data= batch
             input_data = input_data.to(device)
             
             # Compute loss
@@ -148,6 +178,7 @@ def _compute_validation_metrics(
     # Update log with validation loss
     avg_loss = total_loss / max(num_batches, 1)
     log.update_metrics("test", loss=avg_loss)
+    
     
     # Compute KL metrics if analyzers available
     if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits) > 0:
@@ -190,13 +221,16 @@ def _evaluate_log_and_persist(
     log: Log,
     device: torch.device,
     tokens_trained: int,
-    eval_dataloader,
+    dataset_config: ProcessDatasetConfig,
     ngram_analyzer: Optional[NGramAnalyzer] = None,
     markov_analyzer: Optional[MarkovKLAnalyzer] = None,
     val_process: Optional[object] = None,
     return_per_position: bool = True,
 ):
     """Evaluate model, log metrics, and persist checkpoint."""
+    eval_dataloader = dataset_config.to_dataloader(
+        sequence_length=model.cfg.n_ctx, train=False
+    )
     _compute_validation_metrics(
         model=model,
         eval_dataloader=eval_dataloader,
@@ -209,7 +243,7 @@ def _evaluate_log_and_persist(
     )
     
     if verbose:
-        print(f"[Step {tokens_trained}] Training loss: {log.train_loss:.6f}")  # ✅
+        print(f"[Step {tokens_trained}] Training loss: {log.train_loss:.6f}") 
 
     metadata = {
         "train_loss": log.train_loss,
@@ -245,9 +279,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     train_dataloader = config.dataset.to_dataloader(
         sequence_length=model.cfg.n_ctx, train=True
     )
-    eval_dataloader = config.dataset.to_dataloader(
-        sequence_length=model.cfg.n_ctx, train=False
-    )
+
     print(f"[Training] Dataloaders created")
     # Initialize persistence
     persister = _setup_persister(config)
@@ -256,10 +288,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     val_process = getattr(config.dataset, 'process', None)
     ngram_analyzer, markov_analyzer = _setup_kl_analyzers(
         config=config,
-        vocab_size=model.cfg.d_vocab,
-        eval_dataloader=eval_dataloader,
-        val_process=val_process,
-    )
+        vocab_size=model.cfg.d_vocab)
     
     model.train()
     tokens_trained_so_far = 0
@@ -282,28 +311,6 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
             batch_idx=batch_idx,
         )
         
-        # Checkpoint and evaluation
-        if _check_if_action_batch(
-            perform_action_every_n_tokens=config.persistance.checkpoint_every_n_tokens,
-            batch_size=config.dataset.batch_size,
-            batch_idx=batch_idx,
-            sequence_len=model.cfg.n_ctx,
-        ):
-            model.eval()
-            _evaluate_log_and_persist(
-                persister=persister,
-                model=model,
-                log=log,
-                verbose=config.verbose,
-                device=device,
-                tokens_trained=tokens_trained_so_far,
-                eval_dataloader=eval_dataloader,
-                ngram_analyzer=ngram_analyzer,
-                markov_analyzer=markov_analyzer,
-                val_process=val_process,
-                return_per_position=return_per_position,
-            )
-            model.train()
     
     # Final evaluation
     model.eval()
@@ -314,7 +321,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         verbose=config.verbose,
         device=device,
         tokens_trained=tokens_trained_so_far,
-        eval_dataloader=eval_dataloader,
+        dataset_config=config.dataset,
         ngram_analyzer=ngram_analyzer,
         markov_analyzer=markov_analyzer,
         val_process=val_process,
