@@ -47,9 +47,9 @@ dataset_config = ProcessDatasetConfig(
     process='Mess3',
     process_params={'x': 0.5, 'a': 0.85},
     batch_size=64,
-    num_tokens=10000,
+    num_tokens=1000000,
     sequence_length=10,
-    test_split=0.0001
+    test_split=0.001
 )
 
 
