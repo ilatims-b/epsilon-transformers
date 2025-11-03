@@ -1,30 +1,23 @@
-#
-"""
-Complete persistance.py with KL analysis metric logging support.
-"""
-
 import torch
 import pathlib
 from typing import Optional, Dict, Any
-
+import csv
+import pandas as pd  
 
 class Persister:
     """Handles model persistence and checkpoint management."""
     
-    def __init__(self, save_dir: str = "./checkpoints", use_s3: bool = False):
+    def __init__(self, save_dir: str = "./checkpoints"):
         """
         Initialize persister.
         
         Args:
             save_dir: Directory to save checkpoints
-            use_s3: Whether to use S3 for storage
         """
         self.save_dir = pathlib.Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        self.use_s3 = use_s3
         self.checkpoint_count = 0
-       
-    
+
     def save_model(self, model: Any, tokens_trained: int, metadata: Optional[Dict] = None):
         """
         Save model checkpoint.
@@ -74,3 +67,46 @@ class Persister:
         if not checkpoints:
             return None
         return max(checkpoints, key=lambda x: x.stat().st_mtime)
+
+    def save_metrics_to_csv(self, split: str, metrics: Dict[str, float], step: int):
+        """
+        Append metrics to train_logs.csv or test_logs.csv.
+
+        Args:
+            split: 'train' or 'test'
+            metrics: dictionary of metric_name -> value
+            step: current training step (e.g., tokens_trained)
+        """
+        assert split in ["train", "test"], "split must be 'train' or 'test'"
+
+        filename = self.save_dir / f"{split}_logs.csv"
+        fieldnames = ["step", "metric_name", "value"]
+
+        # Create file with header if it doesn't exist
+        file_exists = filename.exists()
+        with open(filename, mode="a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+
+            for metric_name, val in metrics.items():
+                writer.writerow({
+                    "step": step,
+                    "metric_name": metric_name,
+                    "value": val
+                })
+
+        print(f"[Persister] Logged {len(metrics)} {split} metrics to {filename.name}")
+
+    def load_metrics_csv(self, split: str) -> Optional[pd.DataFrame]:
+        """
+        Load persisted CSV metrics as a DataFrame.
+        Returns None if file doesn't exist.
+        """
+        filename = self.save_dir / f"{split}_logs.csv"
+        if not filename.exists():
+            print(f"[Persister] No {split}_logs.csv found at {self.save_dir}")
+            return None
+        df = pd.read_csv(filename)
+        print(f"[Persister] Loaded {len(df)} entries from {filename.name}")
+        return df    

@@ -1,10 +1,3 @@
-"""
-Corrected KL divergence analysis - properly track state through sequence.
-
-This module computes KL divergence against ground truth Markov process distributions
-by correctly tracking the hidden state through the sequence using _compute_next_distribution.
-"""
-
 import torch
 import torch.nn.functional as F
 from typing import Dict, Tuple, Optional

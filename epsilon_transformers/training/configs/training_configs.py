@@ -1,12 +1,3 @@
-
-
-"""
-CORRECT training_configs.py for epsilon-transformers with KL analysis support.
-
-This file extends the existing training_configs.py with KL analysis capabilities.
-Uses Pydantic Config inheritance (not dataclasses) to match the repo structure.
-"""
-
 from typing import Literal, Optional
 from pydantic import BaseModel, field_validator, model_validator
 import pathlib
@@ -55,14 +46,13 @@ class OptimizerConfig(Config):
 
 
 class PersistanceConfig(Config):
-    location: Literal["local", "s3"]
+    location: Literal["local"]
     collection_location: pathlib.Path | str
     checkpoint_every_n_tokens: int
 
     def init(self) -> Persister:
-        use_s3 = self.location == "s3"
         save_dir = str(self.collection_location)
-        return Persister(save_dir=save_dir, use_s3=use_s3) 
+        return Persister(save_dir=save_dir) 
 
 
 class ProcessDatasetConfig(Config):

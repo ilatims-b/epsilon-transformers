@@ -1,13 +1,3 @@
-
-"""
-Updated train.py - Works with corrected training_configs.py
-
-Key changes:
-- Uses Log class from training_configs (not external)
-- Supports KL analysis with updated config
-- Proper error handling for wandb setup
-"""
-
 import fire
 import pathlib
 import random
@@ -206,6 +196,11 @@ def _evaluate_log_and_persist(
     persister.save_model(model, tokens_trained, metadata=metadata) 
     print(f"[Step {tokens_trained}] Metrics: {log.metrics}")
     
+    if "train" in log.metrics and log.metrics["train"]:
+        persister.save_metrics_to_csv("train", log.metrics["train"], tokens_trained)
+    if "test" in log.metrics and log.metrics["test"]:
+        persister.save_metrics_to_csv("test", log.metrics["test"], tokens_trained)
+
     log.persist()
     persister.save_model(model, tokens_trained, metadata=log.metrics)
     log.reset()

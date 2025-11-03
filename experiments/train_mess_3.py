@@ -1,9 +1,3 @@
-"""
-Updated train_mess3.py - Config only, uses corrected training_configs.py
-
-Includes wandb_api_key support and proper KL analysis configuration.
-"""
-
 from transformers.models import FalconForSequenceClassification
 from epsilon_transformers.training.configs.model_configs import RawModelConfig
 from epsilon_transformers.training.configs.training_configs import (
