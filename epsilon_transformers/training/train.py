@@ -17,7 +17,7 @@ from tqdm import tqdm
 from typing import Tuple, Optional
 from torch.utils.data import DataLoader
 
-from epsilon_transformers.persistence import Persister
+from epsilon_transformers.persistence import Persister, MetricLogger
 from epsilon_transformers.training.configs.training_configs import (
     TrainConfig,
     Log,
@@ -226,7 +226,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     
     # Initialize logger (handles wandb setup)
     log = config.init_logger()
-    
+    metric_logger=config.init_metric_logger()
     # Initialize model and optimizer
     model = config.model.to_hooked_transformer(device=device, seed=config.seed)
     optimizer = config.optimizer.from_model(model=model, device=device)
@@ -257,7 +257,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         input_data, target_data = input_data.to(device), target_data.to(device)
         loss = model(input_data, return_type="loss")
         log.update_metrics(train_or_test="train", loss=loss.item())
-        
+        metric_logger.log_metrics({"train/loss": loss.item()}, step=batch_idx)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -306,9 +306,12 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         val_process=val_process,
         return_per_position=return_per_position,
     )
-    
+    for name, val in log.metrics["test"].items():
+        metric_logger.log_metrics({f"test/{name}": val},step=tokens_trained_so_far)
     # Close logger
+    metric_logger.close()
     config.logging.close()
+
     
     return model, log
 
