@@ -1,12 +1,3 @@
-"""
-Updated train.py - Works with corrected training_configs.py
-
-Key changes:
-- Uses Log class from training_configs (not external)
-- Supports KL analysis with updated config
-- Proper error handling for wandb setup
-"""
-
 import fire
 import pathlib
 import random
@@ -17,7 +8,7 @@ from tqdm import tqdm
 from typing import Tuple, Optional
 from torch.utils.data import DataLoader
 
-from epsilon_transformers.persistence import Persister, MetricLogger
+from epsilon_transformers.persistence import Persister
 from epsilon_transformers.training.configs.training_configs import (
     TrainConfig,
     Log,
@@ -76,10 +67,7 @@ def _setup_persister(config: TrainConfig):
 
 def _setup_kl_analyzers(
     config: TrainConfig,
-    vocab_size: int,
-    # eval_dataloader,
-    # val_process: Optional[object] = None,
-    # dataset_config: ProcessDatasetConfig = None,
+    vocab_size: int
 ) -> Tuple[Optional[NGramAnalyzer], Optional[MarkovKLAnalyzer]]:
     """Initialize KL divergence analyzers if enabled."""
     ngram_analyzer = None
@@ -208,6 +196,11 @@ def _evaluate_log_and_persist(
     persister.save_model(model, tokens_trained, metadata=metadata) 
     # print(f"[Step {tokens_trained}] Metrics: {log.metrics}")
     
+    if "train" in log.metrics and log.metrics["train"]:
+        persister.save_metrics_to_csv("train", log.metrics["train"], tokens_trained)
+    if "test" in log.metrics and log.metrics["test"]:
+        persister.save_metrics_to_csv("test", log.metrics["test"], tokens_trained)
+
     log.persist()
     persister.save_model(model, tokens_trained, metadata=log.metrics)
     log.reset()
@@ -226,7 +219,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     
     # Initialize logger (handles wandb setup)
     log = config.init_logger()
-    metric_logger=config.init_metric_logger()
+    
     # Initialize model and optimizer
     model = config.model.to_hooked_transformer(device=device, seed=config.seed)
     optimizer = config.optimizer.from_model(model=model, device=device)
@@ -241,7 +234,6 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     persister = _setup_persister(config)
     
     # Initialize KL analyzers
-    # val_process = getattr(config.dataset, 'process', None)
     val_process = get_process_object(config.dataset.process, config.dataset.process_params)
     ngram_analyzer, markov_analyzer = _setup_kl_analyzers(
         config=config,
@@ -257,7 +249,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         input_data, target_data = input_data.to(device), target_data.to(device)
         loss = model(input_data, return_type="loss")
         log.update_metrics(train_or_test="train", loss=loss.item())
-        metric_logger.log_metrics({"train/loss": loss.item()}, step=batch_idx)
+        
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -306,12 +298,9 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         val_process=val_process,
         return_per_position=return_per_position,
     )
-    for name, val in log.metrics["test"].items():
-        metric_logger.log_metrics({f"test/{name}": val},step=tokens_trained_so_far)
+    
     # Close logger
-    metric_logger.close()
     config.logging.close()
-
     
     return model, log
 

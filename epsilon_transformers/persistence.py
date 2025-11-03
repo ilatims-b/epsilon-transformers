@@ -1,29 +1,23 @@
-#
-"""
-Complete persistance.py with KL analysis metric logging support.
-"""
-
 import torch
 import pathlib
 from typing import Optional, Dict, Any
-
+import csv
+import pandas as pd  
 
 class Persister:
     """Handles model persistence and checkpoint management."""
     
-    def __init__(self, save_dir: str = "./checkpoints", use_s3: bool = False):
+    def __init__(self, save_dir: str = "./checkpoints"):
         """
         Initialize persister.
         
         Args:
             save_dir: Directory to save checkpoints
-            use_s3: Whether to use S3 for storage
         """
         self.save_dir = pathlib.Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        self.use_s3 = use_s3
         self.checkpoint_count = 0
-    
+
     def save_model(self, model: Any, tokens_trained: int, metadata: Optional[Dict] = None):
         """
         Save model checkpoint.
@@ -74,85 +68,45 @@ class Persister:
             return None
         return max(checkpoints, key=lambda x: x.stat().st_mtime)
 
-
-class MetricLogger:
-    """Handles metric logging for training."""
-    
-    def __init__(self, log_dir: str = "./logs", log_to_wandb: bool = False,
-                 wandb_project: Optional[str] = None):
+    def save_metrics_to_csv(self, split: str, metrics: Dict[str, float], step: int):
         """
-        Initialize metric logger.
-        
+        Append metrics to train_logs.csv or test_logs.csv.
+
         Args:
-            log_dir: Directory to save logs
-            log_to_wandb: Whether to log to wandb
-            wandb_project: Wandb project name
+            split: 'train' or 'test'
+            metrics: dictionary of metric_name -> value
+            step: current training step (e.g., tokens_trained)
         """
-        self.log_dir = pathlib.Path(log_dir)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.log_to_wandb = log_to_wandb
-        self.wandb_project = wandb_project
-        
-        self.metrics_history = []
-        
-        if log_to_wandb:
-            try:
-                import wandb
-                wandb.init(project=wandb_project)
-                self.wandb = wandb
-                print(f"[MetricLogger] Initialized wandb logging to project '{wandb_project}'")
-            except ImportError:
-                print("[MetricLogger] wandb not installed, disabling wandb logging")
-                self.log_to_wandb = False
-    
-    def log_metrics(self, metrics: Dict[str, float], step: int):
+        assert split in ["train", "test"], "split must be 'train' or 'test'"
+
+        filename = self.save_dir / f"{split}_logs.csv"
+        fieldnames = ["step", "metric_name", "value"]
+
+        # Create file with header if it doesn't exist
+        file_exists = filename.exists()
+        with open(filename, mode="a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+
+            for metric_name, val in metrics.items():
+                writer.writerow({
+                    "step": step,
+                    "metric_name": metric_name,
+                    "value": val
+                })
+
+        print(f"[Persister] Logged {len(metrics)} {split} metrics to {filename.name}")
+
+    def load_metrics_csv(self, split: str) -> Optional[pd.DataFrame]:
         """
-        Log metrics.
-        
-        Args:
-            metrics: Dictionary of metric names to values
-            step: Current training step
+        Load persisted CSV metrics as a DataFrame.
+        Returns None if file doesn't exist.
         """
-        # Store in memory
-        log_entry = {'step': step, 'metrics': metrics}
-        self.metrics_history.append(log_entry)
-        
-        # Log to wandb if enabled
-        if self.log_to_wandb:
-            self.wandb.log(metrics, step=step)
-        
-        # Print to console
-        metric_str = " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
-        print(f"[Step {step}] {metric_str}")
-    
-    def save_metrics(self):
-        """Save metrics to file."""
-        import json
-        metrics_path = self.log_dir / "metrics.json"
-        with open(metrics_path, 'w') as f:
-            json.dump(self.metrics_history, f, indent=2)
-        print(f"[MetricLogger] Saved metrics to {metrics_path}")
-    
-    def close(self):
-        """Close logger."""
-        self.save_metrics()
-        if self.log_to_wandb:
-            self.wandb.finish()
-
-
-# For compatibility with existing code
-def init_persister(config) -> Persister:
-    """Initialize persister from config."""
-    return Persister(
-        save_dir=config.persistance.save_dir,
-        use_s3=config.persistance.use_s3
-    )
-
-
-def init_metric_logger(config) -> MetricLogger:
-    """Initialize metric logger from config."""
-    return MetricLogger(
-        log_dir=config.logging.log_dir,
-        log_to_wandb=config.logging.log_to_wandb,
-        wandb_project=config.logging.wandb_project
-    )
+        filename = self.save_dir / f"{split}_logs.csv"
+        if not filename.exists():
+            print(f"[Persister] No {split}_logs.csv found at {self.save_dir}")
+            return None
+        df = pd.read_csv(filename)
+        print(f"[Persister] Loaded {len(df)} entries from {filename.name}")
+        return df    

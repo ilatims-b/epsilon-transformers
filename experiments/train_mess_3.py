@@ -1,9 +1,3 @@
-"""
-Updated train_mess3.py - Config only, uses corrected training_configs.py
-
-Includes wandb_api_key support and proper KL analysis configuration.
-"""
-
 from transformers.models import FalconForSequenceClassification
 from epsilon_transformers.training.configs.model_configs import RawModelConfig
 from epsilon_transformers.training.configs.training_configs import (
@@ -52,7 +46,7 @@ optimizer_config = OptimizerConfig(
 dataset_config = ProcessDatasetConfig(
     process='Mess3',
     process_params={'x': 0.5, 'a': 0.85},
-    batch_size=16,
+    batch_size=64,
     num_tokens=10000,
     sequence_length=10,
     test_split=0.0001
