@@ -228,7 +228,7 @@ def _evaluate_log_and_persist(
         "test_loss": log.test_loss,
     }
     persister.save_model(model, tokens_trained, metadata=metadata) 
-    print(f"[Step {tokens_trained}] Metrics: {log.metrics}")
+    #print(f"[Step {tokens_trained}] Metrics: {log.metrics}")
 
     if "train" in log.metrics and log.metrics["train"]:
         persister.save_metrics_to_csv("train", log.metrics["train"], tokens_trained)
