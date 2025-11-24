@@ -162,6 +162,7 @@ class LoggingConfig(Config):
     wandb_api_key: str | None = None  # NEW: Explicit API key field
     train_loss: bool = True
     test_loss: bool = True
+    run_name: str | None= None
 
     @field_validator("project_name")
     @classmethod
@@ -272,7 +273,7 @@ class TrainConfig(Config):
                 )
 
             wandb.login(key=wandb_api_key)
-            wandb.init(project=self.logging.project_name, config=self.model_dump())
+            wandb.init(project=self.logging.project_name, name=self.logging.run_name, config=self.model_dump())
         
         if self.logging.local is not None:
             raise NotImplementedError()
