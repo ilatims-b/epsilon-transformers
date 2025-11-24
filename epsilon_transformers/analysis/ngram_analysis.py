@@ -1,5 +1,6 @@
 
 
+from re import X
 import torch
 import torch.nn.functional as F
 from collections import defaultdict
@@ -39,7 +40,10 @@ class NGramAnalyzer:
         Args:
             sequences: Tensor of shape (batch_size, seq_len) containing token IDs
         """
-        sequences = sequences.cpu().numpy()
+        if hasattr(sequences,'cpu'):
+            sequences = sequences.cpu().numpy()
+        elif 'cupy' in str(type(sequences)):
+            sequences=sequences.get()   
         
         for seq in sequences:
             for pos in range(1, len(seq)):
@@ -91,9 +95,9 @@ class NGramAnalyzer:
         return probs
     
     def compute_kl_divergence_batch(self, 
-                                    model_logits: torch.Tensor,
-                                    sequences: torch.Tensor,
-                                    n: int) -> Tuple[torch.Tensor, torch.Tensor]:
+                                    model_logits,
+                                    sequences ,
+                                    n: int) -> Tuple[object, object]:
         """
         Compute KL divergence between model predictions and n-gram probabilities.
         
@@ -107,8 +111,17 @@ class NGramAnalyzer:
             - kl_per_position: Tensor of shape (seq_len - 1,) with KL at each position
             - kl_all_values: Tensor of all KL divergence values across batch and positions
         """
+        xp=np
+        if 'cupy' in str(type(model_logits)):
+            import cupy as cp
+            xp=cp
+
         batch_size, seq_len, vocab_size = model_logits.shape
-        sequences_np = sequences.cpu().numpy()
+        if xp!=np:
+            sequences_np = sequences.get()
+        else: 
+            sequences_np = sequences   
+        # sequences_np = sequences.cpu().numpy()
         
         kl_values_per_position = {pos: [] for pos in range(1, seq_len)}
         kl_all_values = []
@@ -124,39 +137,52 @@ class NGramAnalyzer:
                 # Get n-gram probabilities
                 ngram_probs = self.get_next_token_probabilities(context, n)
                 
-                # Convert to tensor
-                ngram_prob_vec = torch.zeros(vocab_size, device=model_logits.device)
+                # # Convert to tensor
+                # ngram_prob_vec = torch.zeros(vocab_size, device=model_logits.device)
+                ngram_prob_vec_cpu=np.zeros(vocab_size, dtype=np.float32)
                 for token_id, prob in ngram_probs.items():
-                    ngram_prob_vec[token_id] = prob
+                    ngram_prob_vec_cpu[token_id] = prob
+
+                if xp!=np:
+                    ngram_prob_vec=xp.asarray(ngram_prob_vec_cpu)
+                else:
+                    ngram_prob_vec=ngram_prob_vec_cpu        
                 
                 # Normalize to ensure probabilities sum to 1
                 ngram_prob_vec = ngram_prob_vec / (ngram_prob_vec.sum() + 1e-10)
                 
                 # Get model probabilities
                 model_logit = model_logits[batch_idx, pos, :]
-                model_probs = F.softmax(model_logit, dim=0)
-                
+                # model_probs = F.softmax(model_logit, dim=0)
+                # Softmax
+                logit_max = xp.max(model_logit)
+                exp_logits = xp.exp(model_logit - logit_max)
+                model_probs = exp_logits / xp.sum(exp_logits)
                 # Compute KL(ngram || model)
-                # KL(P||Q) = sum(P * (log(P) - log(Q)))
-                kl = torch.sum(
-                    ngram_prob_vec * (torch.log(ngram_prob_vec + 1e-10) - torch.log(model_probs + 1e-10))
-                )
-                
+                # # KL(P||Q) = sum(P * (log(P) - log(Q)))
+                # kl = torch.sum(
+                #     ngram_prob_vec * (torch.log(ngram_prob_vec + 1e-10) - torch.log(model_probs + 1e-10))
+                # )
+                # KL = sum(P * (log P - log Q))
+                term1 = xp.log(ngram_prob_vec + 1e-10)
+                term2 = xp.log(model_probs + 1e-10)
+                kl = xp.sum(ngram_prob_vec * (term1 - term2))
+
                 kl_value = kl.item()
                 kl_values_per_position[pos].append(kl_value)
                 kl_all_values.append(kl_value)
         
         # Average KL at each position across batch
-        kl_per_position = torch.zeros(seq_len - 1)
+        kl_per_position = xp.zeros(seq_len - 1)
         for pos in range(1, seq_len):
             if len(kl_values_per_position[pos]) > 0:
-                kl_per_position[pos - 1] = np.mean(kl_values_per_position[pos])
+                kl_per_position[pos - 1] = xp.mean(xp.array(kl_values_per_position[pos]))
         
-        return kl_per_position, torch.tensor(kl_all_values, device='cpu')
+        return kl_per_position, xp.array(kl_all_values)
 
 
-def compute_ngram_kl_divergence(model_logits: torch.Tensor,
-                                 sequences: torch.Tensor,
+def compute_ngram_kl_divergence(model_logits,
+                                 sequences,
                                  ngram_analyzer: NGramAnalyzer,
                                  n_values: List[int] = None,
                                  return_per_position: bool = True) -> Dict[str, float]:
@@ -193,8 +219,12 @@ def compute_ngram_kl_divergence(model_logits: torch.Tensor,
         
         # Per-position metrics if requested
         if return_per_position:
-            for pos_idx, kl_at_pos in enumerate(kl_per_position):
+            if 'cupy' in str(type(kl_per_position)):
+                kl_per_pos_cpu=kl_per_position.get()
+            else:
+                kl_per_pos_cpu=kl_per_position    
+            for pos_idx, kl_at_pos in enumerate(kl_per_pos_cpu):
                 position = pos_idx + 1  # Position 1 is index 0
-                results[f"kl_div_ngram_{n}_pos_{position}"] = float(kl_at_pos.item())
+                results[f"kl_div_ngram_{n}_pos_{position}"] = float(kl_at_pos)
     
     return results

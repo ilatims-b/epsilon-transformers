@@ -2,6 +2,7 @@ import fire
 import pathlib
 import random
 import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,6 +24,12 @@ from epsilon_transformers.process import Process
 
 from epsilon_transformers.process.processes import PROCESS_REGISTRY
 
+def torch_to_cupy(tensor):
+    import cupy as cp
+    from torch.utils.dlpack import to_dlpack
+    from cupy import from_dlpack
+    return from_dlpack(to_dlpack(tensor))
+    
 def get_process_object(process_name: str, process_params: dict):
     """Return an instantiated Process object given name and parameters."""
     process_class = PROCESS_REGISTRY.get(process_name, None)
@@ -147,13 +154,14 @@ def _compute_validation_metrics(
 
 
             # Get logits for KL analysis
-            all_logits.append(logits.cpu())
-            all_sequences.append(input_data.cpu())
+            all_logits.append(logits)
+            all_sequences.append(input_data)
     
     # Update log with validation loss
     avg_loss = total_loss / max(num_batches, 1)
     log.update_metrics("test", loss=avg_loss)
     
+
     
     # Compute KL metrics if analyzers available
     if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits) > 0:
@@ -161,11 +169,27 @@ def _compute_validation_metrics(
         all_sequences_tensor = torch.cat(all_sequences, dim=0)
         ngram_analyzer.build_from_sequences(all_sequences_tensor)
         print(f"[KL Analysis] N-gram analyzer (rebuilt) on current eval dataset")
+        if device.type == 'cuda' :
+            try:
+                import cupy as cp
+                backend_logits = torch_to_cupy(all_logits_tensor)
+                backend_sequences = torch_to_cupy(all_sequences_tensor)
+                print(f"[KL Analysis] Data moved to CuPy for KL computations")
+            except Exception as e:
+                print(f"[KL Analysis] Failed to move data to CuPy: {e}. Using numpy on CPU.")
+                backend_logits = all_logits_tensor.cpu().numpy()
+                backend_sequences = all_sequences_tensor.cpu().numpy()  
+
+        else:
+            backend_logits = all_logits_tensor.cpu().numpy()
+            backend_sequences = all_sequences_tensor.cpu().numpy()
+                      
+        
         # N-gram KL divergences
         if ngram_analyzer is not None:
             ngram_metrics = compute_ngram_kl_divergence(
-                all_logits_tensor,
-                all_sequences_tensor,
+                backend_logits,
+                backend_sequences,
                 ngram_analyzer,
                 n_values=ngram_analyzer.n_grams,
                 return_per_position=return_per_position,
@@ -177,8 +201,8 @@ def _compute_validation_metrics(
         # Markov KL divergence
         if markov_analyzer is not None and val_process is not None:
             markov_metrics = compute_markov_kl_divergence(
-                all_logits_tensor,
-                all_sequences_tensor,
+                backend_logits,
+                backend_sequences,
                 process=val_process,
                 analyzer=markov_analyzer,
                 return_per_position=return_per_position,
