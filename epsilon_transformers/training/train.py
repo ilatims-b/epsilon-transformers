@@ -2,7 +2,7 @@ import fire
 import pathlib
 import random
 import numpy as np
-
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -172,8 +172,19 @@ def _compute_validation_metrics(
         if device.type == 'cuda' :
             try:
                 import cupy as cp
+                print("[TIMING] Starting CuPy conversion")
+                torch.cuda.synchronize()
+                t0 = time.time()
                 backend_logits = torch_to_cupy(all_logits_tensor)
+                torch.cuda.synchronize()
+                t1 = time.time()
+                print(f"[TIMING] CuPy conversion took {t1 - t0:.3f} seconds for backend_logits")
+                torch.cuda.synchronize()
+                t0 = time.time()
                 backend_sequences = torch_to_cupy(all_sequences_tensor)
+                torch.cuda.synchronize()
+                t1 = time.time()
+                print(f"[TIMING] CuPy conversion took {t1 - t0:.3f} seconds for backend_sequences")
                 print(f"[KL Analysis] Data moved to CuPy for KL computations")
             except Exception as e:
                 print(f"[KL Analysis] Failed to move data to CuPy: {e}. Using numpy on CPU.")
@@ -305,6 +316,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     for batch_idx, (input_data, target_data) in enumerate(
         tqdm(train_dataloader, desc="Train Loop")
     ):
+        t0 = time.time()
         input_data = input_data.to(device)
         target_data = target_data.to(device)
         logits = model(input_data, return_type="logits")
@@ -316,6 +328,8 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         optimizer.zero_grad()
         mean_loss.backward()
         optimizer.step()
+        t1 = time.time()
+        print(f"[TIMING] Train batch took {t1 - t0:.3f} seconds")
 
         tokens_trained_so_far = _calculate_tokens_trained(
             batch_size=config.dataset.batch_size,
@@ -331,6 +345,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
             sequence_len=model.cfg.n_ctx,
         ):
             model.eval()
+            t0 = time.time()
             _evaluate_log_and_persist(
                 persister=persister,
                 model=model,
@@ -345,6 +360,8 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
                 return_per_position=return_per_position,
                 minimum_cross_entropy=minimum_cross_entropy
             )
+            t1 = time.time()
+            print(f"[TIMING] Full evaluation step took {t1 - t0:.3f} seconds")
             model.train()
     
     # Final evaluation
