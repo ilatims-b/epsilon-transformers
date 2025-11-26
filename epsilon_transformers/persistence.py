@@ -113,6 +113,7 @@ class Persister:
             state_dict=checkpoint_data
         
         train_config = self.load_training_config()
+        config=None
         if train_config is not None:
             if 'model' in train_config:
                 model_config_dict=train_config['model']
@@ -124,14 +125,14 @@ class Persister:
             except Exception as e:
                 print(f"Error constructing RawModelConfig: {e}")
                 config=_state_dict_to_model_config(state_dict=state_dict)
-        else:
+        if config is None:
             print("No train_config.json found, inferring from state_dict")
             config=_state_dict_to_model_config(state_dict=state_dict)
 
-            try:
-                model= config.to_hooked_transformer(device=device)
-            except Exception as e:
-                raise ValueError(f"failed to initialize hookedtransformer: {e}")    
+        try:
+            model= config.to_hooked_transformer(device=device)
+        except Exception as e:
+            raise ValueError(f"failed to initialize hookedtransformer: {e}")    
         model.load_state_dict(state_dict=state_dict)
         return model    
 
