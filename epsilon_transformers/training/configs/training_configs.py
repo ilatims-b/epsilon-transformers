@@ -76,16 +76,18 @@ class ProcessDatasetConfig(Config):
         """Create dataloader from config."""
         # Use sequence_length from config by default
         seq_len = sequence_length
-        
+        total_tokens_target = (
+            self.num_tokens
+            if train
+            else math.ceil(self.num_tokens * self.test_split)
+            )
+        num_samples=total_tokens_target // seq_len    
         dataset = ProcessDataset(
             process_name=self.process,
             process_params=self.process_params,
             sequence_length=seq_len,
-            num_samples=(
-                self.num_tokens
-                if train
-                else math.ceil(self.num_tokens * self.test_split)
-            ),
+            
+            num_samples=num_samples,
         )
         return DataLoader(
             dataset=dataset,

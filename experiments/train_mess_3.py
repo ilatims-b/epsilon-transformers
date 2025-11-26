@@ -22,9 +22,9 @@ model_config = RawModelConfig(
     d_model=64,
     n_ctx=10,
     d_head=8,
-    n_head=1,
-    d_mlp=12,
-    n_layers=4,
+    n_head=2,
+    d_mlp=256,
+    n_layers=1,
 )
 
 
@@ -34,7 +34,7 @@ model_config = RawModelConfig(
 
 optimizer_config = OptimizerConfig(
     optimizer_type='sgd',
-    learning_rate=1e-2,
+    learning_rate=1e-4,
     weight_decay=0
 )
 
@@ -45,11 +45,11 @@ optimizer_config = OptimizerConfig(
 
 dataset_config = ProcessDatasetConfig(
     process='Mess3',
-    process_params={'x': 0.5, 'a': 0.85},
-    batch_size=64,
-    num_tokens=1000000,
+    process_params={'x': 0.05, 'a': 0.85},
+    batch_size=128,
+    num_tokens=150000,
     sequence_length=10,
-    test_split=0.001
+    test_split=0.0625
 )
 
 
@@ -60,25 +60,25 @@ from pathlib import Path
 
 persistance_config = PersistanceConfig(
     location='local',
-    collection_location=Path('models/mess3'),
-    checkpoint_every_n_tokens=1000
+    collection_location=Path('models/mess3/single_layer'),
+    checkpoint_every_n_tokens=125000
 )
 
 
 # ============================================================================
 # Logging Configuration - UPDATED with wandb_api_key
 # ============================================================================
-
 logging_config = LoggingConfig(
     project_name="epstrans",
     wandb=True,
     # NEW: Option 1 - Pass API key directly (recommended for testing)
-    wandb_api_key="9df77e7cbad36f3323af2ea208aa4027a970df97",  # NEW!
+    wandb_api_key="9df77e7cbad36f3323af2ea208aa4027a970df97",
+    run_name="mess3single_layer_0.05_0.85",# NEW!
     # OR use environment variable: export WANDB_API_KEY="YOUR_KEY"
-    run_name="run_name_experiment",
     train_loss=True,
     test_loss=True,
 )
+
 
 
 # ============================================================================
@@ -101,7 +101,6 @@ kl_analysis_config = KLAnalysisConfig(
 # ============================================================================
 # Complete Training Configuration
 # ============================================================================
-
 mock_config = TrainConfig(
     model=model_config,
     optimizer=optimizer_config,

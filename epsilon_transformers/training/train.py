@@ -102,6 +102,7 @@ def _compute_myopic_entropy(val_process:object, n_ctx: int, device: torch.device
     #block_entropy = mixed_state_tree.block_entropy
     myopic_entropy_rate = mixed_state_tree.myopic_entropy
     minimum_cross_entropy = myopic_entropy_rate 
+    print(minimum_cross_entropy)
     return torch.tensor(minimum_cross_entropy, dtype=torch.float32, device=device)
 
 def _compute_relative_losses(loss_tensor: torch.Tensor, minimum_cross_entropy: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -110,6 +111,7 @@ def _compute_relative_losses(loss_tensor: torch.Tensor, minimum_cross_entropy: t
     loss_tensor: (batch, seq_len)
     """
     per_position_loss = loss_tensor.mean(dim=0)
+    print(per_position_loss)
     relative_loss = per_position_loss / minimum_cross_entropy
     mean_loss = per_position_loss.mean()
     return mean_loss, relative_loss
@@ -132,6 +134,8 @@ def _compute_validation_metrics(
     all_logits = []
     all_sequences = []
     total_loss = 0.0
+    total_relative_loss_per_pos = None
+    total_relative_loss = 0.0
     num_batches = 0 
     #minimum_cross_entropy = _compute_myopic_entropy(process, model.cfg.n_ctx, device)      
     with torch.no_grad():
@@ -145,11 +149,21 @@ def _compute_validation_metrics(
             
             mean_loss, relative_loss=_compute_relative_losses(loss,minimum_cross_entropy)
             total_loss+=mean_loss.item()
-            num_batches += 1
+            total_relative_loss = relative_loss.mean().item()
+
+            if total_relative_loss_per_pos is None:
+                total_relative_loss_per_pos = torch.zeros_like(relative_loss)
             
-            log.update_metrics("test", loss=mean_loss.item())
-            log.update_metrics("test", metric_name="relative_loss", loss=relative_loss.mean().item())
-            for i, rel_val in enumerate(relative_loss):
+            total_relative_loss_per_pos += relative_loss
+            num_batches += 1
+
+        if num_batches > 0:
+            avg_loss = total_loss / num_batches
+            avg_relative_loss_per_pos = total_relative_loss_per_pos / num_batches
+            avg_relative_loss=total_relative_loss/num_batches    
+            log.update_metrics("test", metric_name="loss", loss=avg_loss)
+            log.update_metrics("test", metric_name="relative_loss", loss=avg_relative_loss)
+            for i, rel_val in enumerate(avg_relative_loss_per_pos):
                 log.update_metrics("test", metric_name=f"relative_loss_{i}", loss=rel_val.item())
 
 
@@ -258,11 +272,11 @@ def _evaluate_log_and_persist(
     if verbose:
         print(f"[Step {tokens_trained}] Training loss: {log.train_loss:.6f}") 
 
-    metadata = {
-        "train_loss": log.train_loss,
-        "test_loss": log.test_loss,
-    }
-    persister.save_model(model, tokens_trained, metadata=metadata) 
+    # metadata = {
+    #     "train_loss": log.train_loss,
+    #     "test_loss": log.test_loss,
+    # }
+    # persister.save_model(model, tokens_trained, metadata=metadata) 
     #print(f"[Step {tokens_trained}] Metrics: {log.metrics}")
 
     if "train" in log.metrics and log.metrics["train"]:
@@ -311,6 +325,9 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     
     model.train()
     tokens_trained_so_far = 0
+
+    # running_train_loss=0.0
+    # running_batch_count= 0
     
     # Training loop
     for batch_idx, (input_data, target_data) in enumerate(
@@ -324,6 +341,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         loss_per_token = criterion(logits.view(-1, logits.size(-1)), target_data.view(-1))
         loss_per_token = loss_per_token.view(input_data.size(0), input_data.size(1))
         mean_loss, relative_loss = _compute_relative_losses(loss_per_token, minimum_cross_entropy)
+
         log.update_metrics(train_or_test="train", loss=mean_loss.item())
         optimizer.zero_grad()
         mean_loss.backward()
