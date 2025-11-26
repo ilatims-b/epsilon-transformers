@@ -111,7 +111,7 @@ def _compute_relative_losses(loss_tensor: torch.Tensor, minimum_cross_entropy: t
     loss_tensor: (batch, seq_len)
     """
     per_position_loss = loss_tensor.mean(dim=0)
-    print(per_position_loss)
+    #print(per_position_loss)
     relative_loss = per_position_loss / minimum_cross_entropy
     mean_loss = per_position_loss.mean()
     return mean_loss, relative_loss
