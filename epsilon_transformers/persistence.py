@@ -1,8 +1,12 @@
 import torch
 import pathlib
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 import csv
 import pandas as pd  
+import re
+import json
+from collections import OrderedDict
+from epsilon_transformers.training.configs.model_configs import RawModelConfig
 
 class Persister:
     """Handles model persistence and checkpoint management."""
@@ -17,6 +21,11 @@ class Persister:
         self.save_dir = pathlib.Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoint_count = 0
+
+    def save_config(self, config_dict: Dict[str, Any]):
+        """Saves the training configuration to JSON."""
+        with open(self.save_dir / 'train_config.json', 'w') as f:
+            json.dump(config_dict, f, indent=2, default=str)    
 
     def save_model(self, model: Any, tokens_trained: int, metadata: Optional[Dict] = None):
         """
@@ -41,8 +50,47 @@ class Persister:
         self.checkpoint_count += 1
         
         print(f"[Persister] Saved checkpoint {checkpoint_num} at {checkpoint_path}")
+
     
-    def load_model(self, model: Any, checkpoint_path: str) -> Dict[str, Any]:
+    def load_training_config(self) -> Dict[str, Any]:
+        """Loads the training configuration from JSON."""
+        config_path = self.save_dir / 'train_config.json'
+        if not config_path.exists():
+            checkpoints=self.get_model_checkpoints()
+            if not checkpoints:
+                print("no checkpts to infer cfg")
+                return None
+            latest=checkpoints[-1]
+            checkpoint_data=torch.load(latest, map_location='cpu')
+            if isinstance(checkpoint_data, dict) and 'model_state_dict' in checkpoint_data:
+                state_dict=checkpoint_data['model_state_dict']
+            else:    
+                state_dict=checkpoint_data
+
+            config_obj=_state_dict_to_model_config(state_dict=state_dict)    
+
+            # Convert Pydantic object to Dictionary for compatibility
+            if hasattr(config_obj, 'model_dump'):
+                return config_obj.model_dump()
+            
+            if hasattr(config_obj,'dict'):
+                return config_obj.dict()
+
+            return config_obj.__dict__    
+                
+        
+        with open(config_path, 'r') as f:
+            return json.load(f)
+
+    def get_model_checkpoints(self) -> List[pathlib.Path]:
+        files=list(self.save_dir.glob("checkpoint_*_tokens_*.pt")) 
+        print(f"[Persister] Found {len(files)} checkpoints in {self.save_dir}")
+        def parse_tokens(path:pathlib.Path)->int:
+            match=re.search(r"tokens_(\d+)", path.name)
+            return int(match.group(1)) if match else -1
+        return sorted(files, key=parse_tokens)      
+
+    def load_model(self, checkpoint_path: pathlib.Path|str, device: str='cput') -> Any:
         """
         Load model from checkpoint.
         
@@ -53,20 +101,44 @@ class Persister:
         Returns:
             Checkpoint dictionary with metadata
         """
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        checkpoint_path=pathlib.Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            checkpoint_path=self.save_dir / checkpoint_path
+            if not checkpoint_path.exists():
+                raise FileNotFoundError(f"checkpt not found at {checkpoint_path}")
+        checkpoint_data=torch.load(checkpoint_path, map_location=device)
+        if isinstance(checkpoint_data, dict) and 'model_state_dict' in checkpoint_data:
+            state_dict=checkpoint_data['model_state_dict']
+        else:
+            state_dict=checkpoint_data
         
-        print(f"[Persister] Loaded checkpoint from {checkpoint_path}")
-        print(f"[Persister] Tokens trained: {checkpoint['tokens_trained']}")
-        
-        return checkpoint
-    
-    def get_latest_checkpoint(self) -> Optional[pathlib.Path]:
-        """Get path to latest checkpoint if it exists."""
-        checkpoints = list(self.save_dir.glob("checkpoint_*.pt"))
-        if not checkpoints:
-            return None
-        return max(checkpoints, key=lambda x: x.stat().st_mtime)
+        train_config = self.load_training_config()
+        if train_config is not None:
+            if 'model' in train_config:
+                model_config_dict=train_config['model']
+            else :
+                model_config_dict=train_config
+
+            try:
+                config=RawModelConfig(**model_config_dict)
+            except Exception as e:
+                print(f"Error constructing RawModelConfig: {e}")
+                config=_state_dict_to_model_config(state_dict=state_dict)
+        else:
+            print("No train_config.json found, inferring from state_dict")
+            config=_state_dict_to_model_config(state_dict=state_dict)
+
+            try:
+                model= config.to_hooked_transformer(device=device)
+            except Exception as e:
+                raise ValueError(f"failed to initialize hookedtransformer: {e}")    
+        model.load_state_dict(state_dict=state_dict)
+        return model    
+
+    def load_final_model(self, device: str='cpu'):
+        checkpoints=self.get_model_checkpoints()
+        latest=checkpoints[-1]
+        return self.load_model(checkpoint_path=latest, device=device)
 
     def save_metrics_to_csv(self, split: str, metrics: Dict[str, float], step: int):
         """
@@ -109,4 +181,65 @@ class Persister:
             return None
         df = pd.read_csv(filename)
         print(f"[Persister] Loaded {len(df)} entries from {filename.name}")
-        return df    
+        return df
+
+    def load_val_log(self) -> pd.DataFrame:
+        return self.load_metrics_csv('test')
+
+    def load_train_log(self) -> pd.DataFrame:
+        return self.load_metrics_csv('train')
+
+    
+def _state_dict_to_model_config(state_dict: OrderedDict, n_ctx: int = 10) -> RawModelConfig:
+        _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY: Dict[str, List[Tuple[str, int]]] = {
+            r"embed\.W_E": [('d_vocab', 0), ('d_model', 1)],
+            r"pos_embed\.W_pos": [],
+            r"blocks\.\d+\.ln\d+\.(w|b)": [],
+            r"blocks\.\d+\.attn\.W_Q": [('n_head', 0), ('d_head', 2)],
+            r"blocks\.\d+\.attn\.b_Q": [],
+            r"blocks\.\d+\.attn\.W_K": [],
+            r"blocks\.\d+\.attn\.b_K": [],
+            r"blocks\.\d+\.attn\.W_O": [],
+            r"blocks\.\d+\.attn\.b_O": [],
+            r"blocks\.\d+\.attn\.W_V": [],
+            r"blocks\.\d+\.attn\.b_V": [],
+            r"blocks\.\d+\.attn\.mask": [],
+            r"blocks\.\d+\.attn\.IGNORE": [],
+            r"blocks\.\d+\.mlp\.W_in": [('d_mlp', 1)],
+            r"blocks\.\d+\.mlp\.b_in": [],
+            r"blocks\.\d+\.mlp\.W_out": [],
+            r"blocks\.\d+\.mlp\.b_out": [],
+            r"ln_final\.(w|b)": [],
+            r"unembed\.(W_U|b_U)": []
+        }
+        def _extract_true_key(dictionary: Dict[str, bool]) -> str:
+            out = []
+            for key, value in dictionary.items():
+                if value:
+                    out.append(key)
+            assert len(out) == 1,  f"{out} does not fit one of the expected module regexs: {_HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY}"
+            return out[0]
+        def _extract_n_layers(state_dict: OrderedDict) -> int:
+            highest_block_idx = None
+            for key in state_dict.keys():
+                if not bool(re.match(r"blocks\.\d+\.", key)):
+                    continue
+                local_block_idx = int(re.search(r'\d+', key).group())
+                if highest_block_idx is None:
+                    highest_block_idx = local_block_idx
+                elif local_block_idx > highest_block_idx:
+                    highest_block_idx = local_block_idx
+            return highest_block_idx + 1
+
+        param_dict = dict(d_vocab=None, d_model=None, n_ctx=n_ctx, d_head=None, n_head=None, d_mlp=None, n_layers=_extract_n_layers(state_dict=state_dict))
+        for module_name, module in state_dict.items():
+            regex_dict = {pattern: bool(re.match(pattern, module_name)) for pattern in _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY.keys()}
+            pattern = _extract_true_key(regex_dict)
+            for key, dim in _HOOKED_TRANSFORMER_MODULE_REGEXES_REGISTRY[pattern]:
+                if param_dict[key] is None:
+                    param_dict[key] = module.size()[dim]
+        assert all([value is not None for value in param_dict.values()])
+        return RawModelConfig(**param_dict)
+
+
+              

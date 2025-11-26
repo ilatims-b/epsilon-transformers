@@ -315,6 +315,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     print(f"[Training] Dataloaders created")
     # Initialize persistence
     persister = _setup_persister(config)
+    persister.save_config(config.model_dump())
     
     # Initialize KL analyzers
     val_process = get_process_object(config.dataset.process, config.dataset.process_params)

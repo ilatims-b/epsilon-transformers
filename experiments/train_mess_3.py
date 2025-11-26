@@ -73,7 +73,7 @@ logging_config = LoggingConfig(
     wandb=True,
     # NEW: Option 1 - Pass API key directly (recommended for testing)
     wandb_api_key="9df77e7cbad36f3323af2ea208aa4027a970df97",
-    run_name="mess3single_layer_0.05_0.85",# NEW!
+    run_name="trial",# NEW!
     # OR use environment variable: export WANDB_API_KEY="YOUR_KEY"
     train_loss=True,
     test_loss=True,
