@@ -273,8 +273,7 @@ class NormTransitionMixin:
         if not np.allclose(transition.sum(axis=1), 1.0):
             raise ValueError("Transition matrix should be stochastic and sum to 1")
 
-        self.vocab_len = self.norm_transition_matrix.shape[0]
-        self.num_states = self.norm_transition_matrix.shape[1]
+        
 
     @abstractmethod
     def _create_norm_matrix(
@@ -322,12 +321,12 @@ class NormTransitionMixin:
         while stack:
             current_node, state_prob_vector, current_path, current_depth = stack.pop()
             if current_depth < depth:
-                emission_probs = _compute_emission_probabilities(
+                emission_probs = self._compute_emission_probabilities(
                     self, state_prob_vector
                 )
                 for emission in range(self.vocab_len):
                     if emission_probs[emission] > 0:
-                        next_state_prob_vector = _compute_next_distribution(
+                        next_state_prob_vector = self._compute_next_distribution(
                             self.norm_transition_matrix, state_prob_vector, emission
                         )
                         child_path = current_path + [emission]
@@ -353,8 +352,9 @@ class NormTransitionMixin:
             root_node=tree_root, process=self.name, nodes=nodes, depth=depth
         )
     
-    def _compute_emission_probabilities( hmm: Process, state_prob_vector: Float[np.ndarray, "num_states"]
-    ) -> Float[np.ndarray, "vocab_len"]:
+    def _compute_emission_probabilities(self,
+    hmm: Process, state_prob_vector: Float[np.ndarray, "num_states"]
+) -> Float[np.ndarray, "vocab_len"]:
         """
         Compute the probabilities associated with each emission given the current mixed state.
         """
@@ -364,7 +364,7 @@ class NormTransitionMixin:
         return emission_probs
 
 
-    def _compute_next_distribution(
+    def _compute_next_distribution(self,
         epsilon_machine: Float[np.ndarray, "vocab_len num_states num_states"],
         current_state_prob_vector: Float[np.ndarray, "num_states"],
         current_emission: int,
