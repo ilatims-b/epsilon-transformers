@@ -273,8 +273,7 @@ class NormTransitionMixin:
         if not np.allclose(transition.sum(axis=1), 1.0):
             raise ValueError("Transition matrix should be stochastic and sum to 1")
 
-        self.vocab_len = self.norm_transition_matrix.shape[0]
-        self.num_states = self.norm_transition_matrix.shape[1]
+        
 
     @abstractmethod
     def _create_norm_matrix(
