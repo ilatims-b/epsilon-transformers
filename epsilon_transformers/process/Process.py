@@ -247,3 +247,136 @@ def _compute_next_distribution(
         "sd, s -> d", epsilon_machine[current_emission], current_state_prob_vector
     )
     return X_next / np.sum(X_next) if np.sum(X_next) != 0 else X_next
+
+
+class NormTransitionMixin:
+    def __init__(self):
+        # Call Process.__init__()
+        super().__init__()
+        # Add extra matrix needed only in this subclass
+        self.norm_transition_matrix = self._create_norm_matrix()
+
+        
+
+        if (
+            len(self.norm_transition_matrix.shape) != 3
+            or self.norm_transition_matrix.shape[1] != self.norm_transition_matrix.shape[2]
+        ):
+            raise ValueError(
+                "Transition matrix should have 3 axes and the final two dims shoulds be square"
+            )
+
+        if self.norm_transition_matrix.shape[1] != self.norm_transition_matrix.shape[2]:
+            raise ValueError("Transition matrix should be square")
+
+        transition = self.norm_transition_matrix.sum(axis=0)
+        if not np.allclose(transition.sum(axis=1), 1.0):
+            raise ValueError("Transition matrix should be stochastic and sum to 1")
+
+        self.vocab_len = self.norm_transition_matrix.shape[0]
+        self.num_states = self.norm_transition_matrix.shape[1]
+
+    @abstractmethod
+    def _create_norm_matrix(
+        self,
+    ) -> Float[np.ndarray, "vocab_len num_states num_states"] :
+        """
+        Create the HMM which defines the process.
+
+        Returns:
+        numpy.ndarray: The transition tensor for the epsilon machine.
+        dict: A dictionary mapping state names to indices.
+        """
+        ...
+
+
+    def _sample_emission_and_next_state(self, current_state_idx: int):
+        """Override the Process version with the linear-process version."""
+        transition_probs = self.transition_matrix[:, current_state_idx, :]
+
+        emission_next_state_idx = np.random.choice(
+            transition_probs.size, p=transition_probs.ravel()
+        )
+
+        emission = emission_next_state_idx // self.num_states
+
+        next_state_idx = np.random.choice(
+            self.num_states,
+            p=self.norm_transition_matrix[emission, current_state_idx, :]
+        )
+
+        return emission, next_state_idx
+    
+    def derive_mixed_state_presentation(self, depth: int) -> MixedStateTree:
+        tree_root = MixedStateTreeNode(
+            state_prob_vector=self.steady_state_vector,
+            children=set(),
+            path=[],
+            emission_prob=0,
+        )
+        nodes = set([tree_root])
+
+        stack: deque[
+            tuple[MixedStateTreeNode, Float[np.ndarray, "num_states"], list[int], int]
+        ] = deque([(tree_root, self.steady_state_vector, [], 0)])
+        while stack:
+            current_node, state_prob_vector, current_path, current_depth = stack.pop()
+            if current_depth < depth:
+                emission_probs = _compute_emission_probabilities(
+                    self, state_prob_vector
+                )
+                for emission in range(self.vocab_len):
+                    if emission_probs[emission] > 0:
+                        next_state_prob_vector = _compute_next_distribution(
+                            self.norm_transition_matrix, state_prob_vector, emission
+                        )
+                        child_path = current_path + [emission]
+                        child_node = MixedStateTreeNode(
+                            state_prob_vector=next_state_prob_vector,
+                            path=child_path,
+                            children=set(),
+                            emission_prob=emission_probs[emission],
+                        )
+                        current_node.add_child(child_node)
+
+                        stack.append(
+                            (
+                                child_node,
+                                next_state_prob_vector,
+                                child_path,
+                                current_depth + 1,
+                            )
+                        )
+            nodes.add(current_node)
+
+        return MixedStateTree(
+            root_node=tree_root, process=self.name, nodes=nodes, depth=depth
+        )
+    
+    def _compute_emission_probabilities(
+    hmm: Process, state_prob_vector: Float[np.ndarray, "num_states"]
+) -> Float[np.ndarray, "vocab_len"]:
+        """
+        Compute the probabilities associated with each emission given the current mixed state.
+        """
+        T = hmm.transition_matrix
+        emission_probs = np.einsum("s,esd->ed", state_prob_vector, T).sum(axis=1)
+        emission_probs /= emission_probs.sum()
+        return emission_probs
+
+
+def _compute_next_distribution(
+    epsilon_machine: Float[np.ndarray, "vocab_len num_states num_states"],
+    current_state_prob_vector: Float[np.ndarray, "num_states"],
+    current_emission: int,
+) -> Float[np.ndarray, "num_states"]:
+        """
+        Compute the next mixed state distribution for a given output.
+        """
+        X_next = np.einsum(
+            "sd, s -> d", epsilon_machine[current_emission], current_state_prob_vector
+        )
+        return X_next 
+
+
+

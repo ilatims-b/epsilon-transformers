@@ -3,7 +3,7 @@ from typing import cast
 from types import FrameType
 import inspect
 
-from epsilon_transformers.process.Process import Process
+from epsilon_transformers.process.Process import Process,NormTransitionMixin
 
 # TODO: Write test for PROCESS_REGISTRY
 # TODO: Think if you really need PROCESS_REGSITRY (if only getting called during dataloader creation, it may be better to have the dataloader take in a process)
@@ -52,7 +52,7 @@ class RRXOR(Process):
         return T, state_names
 
 
-class Mess3(Process):
+class Linear_Mess3(NormTransitionMixin,Process):
     def __init__(self, x=0.15, a=0.6):
         self.name = "mess3"
         self.x = x
@@ -74,7 +74,54 @@ class Mess3(Process):
         T[1, :, :] = [[by, ax, bx], [bx, ay, bx], [bx, ax, by]]
         T[2, :, :] = [[by, bx, ax], [bx, by, ax], [bx, bx, ay]]
 
-        return T, state_names
+
+        return T,state_names
+    
+    def _create_norm_matrix(self):
+        
+        T_n = np.zeros((3,3,3))
+        b = (1 - self.a) / 2
+        y = 1 - 2 * self.x
+
+        ay = self.a * y
+        bx = b * self.x
+        by = b * y
+        ax = self.a * self.x
+
+        ay2bx=ay+2*bx
+        axbybx=ax+by+bx
+
+        T_n[0, :, :] = [[ay/ay2bx, bx/ay2bx, bx/ay2bx], [ax/axbybx, by/axbybx, bx/axbybx], [ax/axbybx, bx/axbybx, by/axbybx]]
+        T_n[1, :, :] = [[by/axbybx, ax/axbybx, bx/axbybx], [bx/ay2bx, ay/ay2bx, bx/ay2bx], [bx/axbybx, ax/axbybx, by/axbybx]]
+        T_n[2, :, :] = [[by/axbybx, bx/axbybx, ax/axbybx], [bx/axbybx, by/axbybx, ax/axbybx], [bx/ay2bx, bx/ay2bx, ay/ay2bx]]
+
+        return T_n
+    
+class Mess3(Process):
+    def __init__(self, x=0.15, a=0.6):
+        self.name = "linear_mess3"
+        self.x = x
+        self.a = a
+        super().__init__()
+
+    def _create_hmm(self):
+        T = np.zeros((3, 3, 3))
+        state_names = {"A": 0, "B": 1, "C": 2}
+        b = (1 - self.a) / 2
+        y = 1 - 2 * self.x
+
+        ay = self.a * y
+        bx = b * self.x
+        by = b * y
+        ax = self.a * self.x
+
+        T[0, :, :] = [[ay, bx, bx], [ax, by, bx], [ax, bx, by]]
+        T[1, :, :] = [[by, ax, bx], [bx, ay, bx], [bx, ax, by]]
+        T[2, :, :] = [[by, bx, ax], [bx, by, ax], [bx, bx, ay]]
+
+        return T, state_names    
+    
+
 
 class Even(Process):
     def __init__(self):
