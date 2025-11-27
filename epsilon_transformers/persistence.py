@@ -7,6 +7,7 @@ import re
 import json
 from collections import OrderedDict
 from epsilon_transformers.training.configs.model_configs import RawModelConfig
+from epsilon_transformers.analysis.ngram_analysis import NGramAnalyzer
 
 class Persister:
     """Handles model persistence and checkpoint management."""
@@ -198,6 +199,45 @@ class Persister:
 
     def load_train_log(self) -> pd.DataFrame:
         return self.load_metrics_csv('train')
+    
+
+    def save_ngram_data(self, analyzer: 'NGramAnalyzer', tokens_trained: int):
+        """Saves N-Gram probability tables and counts."""
+        if analyzer is None:
+            return
+        
+        filename = self.save_dir / f"ngram_state_tokens_{tokens_trained}.pt"
+        data = {
+            'prob_tables': analyzer.prob_tables,
+            #'count_tables': analyzer.count_tables,
+            'n_grams': analyzer.n_grams,
+            'vocab_size': analyzer.vocab_size
+        }
+        torch.save(data, filename)
+        print(f"[Persister] Saved N-Gram state to {filename}")
+
+    def load_ngram_data(self, tokens_trained: int, device: str = 'cpu') -> Optional[Dict]:
+        """Loads N-Gram state if it exists for the given step."""
+        # Try to find exact match first
+        filename = self.save_dir / f"ngram_state_tokens_{tokens_trained}.pt"
+        
+        # If not found, try finding the closest previous one (optional, but good for robustness)
+        if not filename.exists():
+            files = list(self.save_dir.glob("ngram_state_tokens_*.pt"))
+            if not files:
+                print("[Persister] No saved N-Gram state found.")
+                return None
+            # Sort by token count
+            files.sort(key=lambda p: int(re.search(r"tokens_(\d+)", p.name).group(1)))
+            filename = files[-1] # Take latest
+            print(f"[Persister] Exact N-Gram match not found, using latest: {filename}")
+
+        try:
+            data = torch.load(filename, map_location=device)
+            return data
+        except Exception as e:
+            print(f"[Persister] Failed to load N-Gram data: {e}")
+            return None
 
     
 def _state_dict_to_model_config(state_dict: OrderedDict, n_ctx: int = 10) -> RawModelConfig:
