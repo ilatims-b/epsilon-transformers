@@ -54,7 +54,7 @@ class RRXOR(Process):
 
 class Linear_Mess3(NormTransitionMixin,Process):
     def __init__(self, x=0.15, a=0.6):
-        self.name = "mess3"
+        self.name = "linear_mess3"
         self.x = x
         self.a = a
         super().__init__()
@@ -99,7 +99,7 @@ class Linear_Mess3(NormTransitionMixin,Process):
     
 class Mess3(Process):
     def __init__(self, x=0.15, a=0.6):
-        self.name = "linear_mess3"
+        self.name = "mess3"
         self.x = x
         self.a = a
         super().__init__()

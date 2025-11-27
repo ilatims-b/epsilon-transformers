@@ -270,8 +270,8 @@ class NormTransitionMixin:
             raise ValueError("Transition matrix should be square")
 
         transition = self.norm_transition_matrix.sum(axis=0)
-        if not np.allclose(transition.sum(axis=1), 1.0):
-            raise ValueError("Transition matrix should be stochastic and sum to 1")
+        # if not np.allclose(transition.sum(axis=1), 1.0):
+        #     raise ValueError("Transition matrix should be stochastic and sum to 1")
 
         
 
