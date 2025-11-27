@@ -24,11 +24,11 @@ from epsilon_transformers.process import Process
 
 from epsilon_transformers.process.processes import PROCESS_REGISTRY
 
-def torch_to_cupy(tensor):
-    import cupy as cp
-    from torch.utils.dlpack import to_dlpack
-    from cupy import from_dlpack
-    return from_dlpack(to_dlpack(tensor))
+# def torch_to_cupy(tensor):
+#     import cupy as cp
+#     from torch.utils.dlpack import to_dlpack
+#     from cupy import from_dlpack
+#     return from_dlpack(to_dlpack(tensor))
     
 def get_process_object(process_name: str, process_params: dict):
     """Return an instantiated Process object given name and parameters."""
@@ -129,17 +129,27 @@ def _compute_validation_metrics(
     minimum_cross_entropy: torch.Tensor=None
 ) -> Log:
     """Compute validation metrics including loss and KL divergences."""
+
     model.eval()
+
     criterion=nn.CrossEntropyLoss(reduction="none")
+
     all_logits = []
     all_sequences = []
+
     total_loss = 0.0
     total_relative_loss_per_pos = None
     total_relative_loss = 0.0
     num_batches = 0 
-    #minimum_cross_entropy = _compute_myopic_entropy(process, model.cfg.n_ctx, device)      
+
+    t_start_eval=time.time()
+    print("[eval] starting loop")
+
     with torch.no_grad():
-        for batch in tqdm(eval_dataloader, desc="Eval Loop", leave=False):
+        t_model_fwd=0.0
+        for i, batch in enumerate(eval_dataloader):
+            t0 = time.time()
+
             input_data, target_data= batch
             input_data,target_data = input_data.to(device), target_data.to(device)
             
@@ -157,6 +167,12 @@ def _compute_validation_metrics(
             total_relative_loss_per_pos += relative_loss
             num_batches += 1
 
+            all_logits.append(logits)
+            all_sequences.append(input_data)
+            t1 = time.time()
+            t_model_fwd += (t1 - t0)
+        print(f"[eval] model forward time: {t_model_fwd:.3f} seconds over {num_batches} batches")    
+
         if num_batches > 0:
             avg_loss = total_loss / num_batches
             avg_relative_loss_per_pos = total_relative_loss_per_pos / num_batches
@@ -166,77 +182,115 @@ def _compute_validation_metrics(
             for i, rel_val in enumerate(avg_relative_loss_per_pos):
                 log.update_metrics("test", metric_name=f"relative_loss_{i}", loss=rel_val.item())
 
-
-            # Get logits for KL analysis
+            #for kl
             all_logits.append(logits)
             all_sequences.append(input_data)
     
-    # Update log with validation loss
     avg_loss = total_loss / max(num_batches, 1)
     log.update_metrics("test", loss=avg_loss)
     
-
-    
-    # Compute KL metrics if analyzers available
-    if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits) > 0:
-        all_logits_tensor = torch.cat(all_logits, dim=0)
-        all_sequences_tensor = torch.cat(all_sequences, dim=0)
-        ngram_analyzer.build_from_sequences(all_sequences_tensor)
-        print(f"[KL Analysis] N-gram analyzer (rebuilt) on current eval dataset")
-        if device.type == 'cuda' :
-            try:
-                import cupy as cp
-                print("[TIMING] Starting CuPy conversion")
-                torch.cuda.synchronize()
-                t0 = time.time()
-                backend_logits = torch_to_cupy(all_logits_tensor)
-                torch.cuda.synchronize()
-                t1 = time.time()
-                print(f"[TIMING] CuPy conversion took {t1 - t0:.3f} seconds for backend_logits")
-                torch.cuda.synchronize()
-                t0 = time.time()
-                backend_sequences = torch_to_cupy(all_sequences_tensor)
-                torch.cuda.synchronize()
-                t1 = time.time()
-                print(f"[TIMING] CuPy conversion took {t1 - t0:.3f} seconds for backend_sequences")
-                print(f"[KL Analysis] Data moved to CuPy for KL computations")
-            except Exception as e:
-                print(f"[KL Analysis] Failed to move data to CuPy: {e}. Using numpy on CPU.")
-                backend_logits = all_logits_tensor.cpu().numpy()
-                backend_sequences = all_sequences_tensor.cpu().numpy()  
-
-        else:
-            backend_logits = all_logits_tensor.cpu().numpy()
-            backend_sequences = all_sequences_tensor.cpu().numpy()
-                      
-        
-        # N-gram KL divergences
+    if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits)>0:
+        t_concat_start=time.time()
+        all_logits_tensor=torch.cat(all_logits,dim=0)
+        all_sequences_tensor=torch.cat(all_sequences,dim=0)
+        print(f"[eval] concat: {time.time()-t_concat_start:.3f}s")
+        print(f'[kl]computing kl metrics on {len(all_sequences_tensor)} sequences')
         if ngram_analyzer is not None:
-            ngram_metrics = compute_ngram_kl_divergence(
-                backend_logits,
-                backend_sequences,
-                ngram_analyzer,
+            t_ngram_start=time.time()
+            if ngram_analyzer.device != device:
+                print(f"[kl] moving ngram analyzer to {device}")
+                for n in ngram_analyzer.prob_tables:
+                    ngram_analyzer.prob_tables[n]=ngram_analyzer.prob_tables[n].to(device)
+                ngram_analyzer.device=device
+            ngram_metrics=compute_ngram_kl_divergence(
+                all_logits_tensor,
+                all_sequences_tensor,
+                ngram_analyzer=ngram_analyzer,
                 n_values=ngram_analyzer.n_grams,
                 return_per_position=return_per_position,
-            )
-            
+            )    
             for metric_name, metric_value in ngram_metrics.items():
                 log.update_metrics("test", metric_name=metric_name, loss=metric_value)
-        
-        # Markov KL divergence
+            print(f"[kl] ngram kl time: {time.time()-t_ngram_start:.3f}s")
+
         if markov_analyzer is not None and val_process is not None:
-            markov_metrics = compute_markov_kl_divergence(
-                backend_logits,
-                backend_sequences,
+            t_markov_start=time.time()
+            markov_metrics=compute_markov_kl_divergence(
+                all_logits_tensor,
+                all_sequences_tensor,
                 process=val_process,
                 analyzer=markov_analyzer,
                 return_per_position=return_per_position,
             )
-            
             for metric_name, metric_value in markov_metrics.items():
                 log.update_metrics("test", metric_name=metric_name, loss=metric_value)
+            print(f"[kl] markov kl time: {time.time()-t_markov_start:.3f}s")
+    print(f"[eval] total eval time: {time.time()-t_start_eval:.3f}s")
+    return log                    
+
+
+
     
-    return log
+    # Compute KL metrics if analyzers available
+    # if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits) > 0:
+    #     all_logits_tensor = torch.cat(all_logits, dim=0)
+    #     all_sequences_tensor = torch.cat(all_sequences, dim=0)
+    #     ngram_analyzer.build_from_sequences(all_sequences_tensor)
+    #     print(f"[KL Analysis] N-gram analyzer (rebuilt) on current eval dataset")
+    #     if device.type == 'cuda' :
+    #         try:
+    #             import cupy as cp
+    #             print("[TIMING] Starting CuPy conversion")
+    #             torch.cuda.synchronize()
+    #             t0 = time.time()
+    #             backend_logits = torch_to_cupy(all_logits_tensor)
+    #             torch.cuda.synchronize()
+    #             t1 = time.time()
+    #             print(f"[TIMING] CuPy conversion took {t1 - t0:.3f} seconds for backend_logits")
+    #             torch.cuda.synchronize()
+    #             t0 = time.time()
+    #             backend_sequences = torch_to_cupy(all_sequences_tensor)
+    #             torch.cuda.synchronize()
+    #             t1 = time.time()
+    #             print(f"[TIMING] CuPy conversion took {t1 - t0:.3f} seconds for backend_sequences")
+    #             print(f"[KL Analysis] Data moved to CuPy for KL computations")
+    #         except Exception as e:
+    #             print(f"[KL Analysis] Failed to move data to CuPy: {e}. Using numpy on CPU.")
+    #             backend_logits = all_logits_tensor.cpu().numpy()
+    #             backend_sequences = all_sequences_tensor.cpu().numpy()  
+
+    #     else:
+    #         backend_logits = all_logits_tensor.cpu().numpy()
+    #         backend_sequences = all_sequences_tensor.cpu().numpy()
+                      
+        
+    #     # N-gram KL divergences
+    #     if ngram_analyzer is not None:
+    #         ngram_metrics = compute_ngram_kl_divergence(
+    #             backend_logits,
+    #             backend_sequences,
+    #             ngram_analyzer,
+    #             n_values=ngram_analyzer.n_grams,
+    #             return_per_position=return_per_position,
+    #         )
+            
+    #         for metric_name, metric_value in ngram_metrics.items():
+    #             log.update_metrics("test", metric_name=metric_name, loss=metric_value)
+        
+    #     # Markov KL divergence
+    #     if markov_analyzer is not None and val_process is not None:
+    #         markov_metrics = compute_markov_kl_divergence(
+    #             backend_logits,
+    #             backend_sequences,
+    #             process=val_process,
+    #             analyzer=markov_analyzer,
+    #             return_per_position=return_per_position,
+    #         )
+            
+    #         for metric_name, metric_value in markov_metrics.items():
+    #             log.update_metrics("test", metric_name=metric_name, loss=metric_value)
+    
+    # return log
 
 
 def _evaluate_log_and_persist(
@@ -257,17 +311,18 @@ def _evaluate_log_and_persist(
     eval_dataloader = dataset_config.to_dataloader(
         sequence_length=model.cfg.n_ctx, train=False
     )
-    _compute_validation_metrics(
-        model=model,
-        eval_dataloader=eval_dataloader,
-        device=device,
-        log=log,
-        ngram_analyzer=ngram_analyzer,
-        markov_analyzer=markov_analyzer,
-        val_process=val_process,
-        return_per_position=return_per_position,
-        minimum_cross_entropy=minimum_cross_entropy
-    )
+    with torch.no_grad():
+        _compute_validation_metrics(
+            model=model,
+            eval_dataloader=eval_dataloader,
+            device=device,
+            log=log,
+            ngram_analyzer=ngram_analyzer,
+            markov_analyzer=markov_analyzer,
+            val_process=val_process,
+            return_per_position=return_per_position,
+            minimum_cross_entropy=minimum_cross_entropy
+        )
     
     if verbose:
         print(f"[Step {tokens_trained}] Training loss: {log.train_loss:.6f}") 
@@ -323,7 +378,48 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     ngram_analyzer, markov_analyzer = _setup_kl_analyzers(
         config=config,
         vocab_size=model.cfg.d_vocab)
-    
+
+    # --- BUILD N-GRAM ANALYZER ON TRAIN DATA ---
+    if ngram_analyzer is not None:
+        print(f"[Training] Building N-Gram Analyzer statistics from training data...")
+        t_ngram_build_start=time.time()
+        # 1. Collect all training data into one tensor
+        all_train_sequences = []
+        for input_data, _ in tqdm(train_dataloader, desc="Collecting Train Data"):
+            all_train_sequences.append(input_data)
+        
+        # Shape: [Total_Train_Samples, Seq_Len]
+        full_train_tensor = torch.cat(all_train_sequences, dim=0)
+        
+        # 2. Move to GPU for fast build (if it fits)
+        # Note: If OOM on P100, move to 'cpu' instead.
+        build_device = device
+        try:
+            full_train_tensor = full_train_tensor.to(build_device)
+            ngram_analyzer.build_from_sequences(full_train_tensor)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print("[Warning] OOM during N-Gram build on GPU. Falling back to CPU.")
+                torch.cuda.empty_cache()
+                ngram_analyzer.build_from_sequences(full_train_tensor.to('cpu'))
+                # Move tables back to GPU for eval later
+                for n in ngram_analyzer.prob_tables:
+                    ngram_analyzer.prob_tables[n] = ngram_analyzer.prob_tables[n].to(device)
+                    ngram_analyzer.device = device
+            else:
+                raise e
+        
+        # Free memory
+        del full_train_tensor
+        del all_train_sequences
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        print(f"[Training] N-Gram build time: {time.time()-t_ngram_build_start:.3f}s")
+        _set_random_seed(config.seed)
+        train_dataloader=config.dataset.to_dataloader(
+            sequence_length=model.cfg.n_ctx, train=True
+        )
+
     model.train()
     tokens_trained_so_far = 0
 
@@ -336,6 +432,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     ):
         t0 = time.time()
         input_data = input_data.to(device)
+        print(input_data[0].shape)
         target_data = target_data.to(device)
         logits = model(input_data, return_type="logits")
         criterion=nn.CrossEntropyLoss(reduction="none")
@@ -381,7 +478,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
                 minimum_cross_entropy=minimum_cross_entropy
             )
             t1 = time.time()
-            print(f"[TIMING] Full evaluation step took {t1 - t0:.3f} seconds")
+            #print(f"[TIMING] Full evaluation step took {t1 - t0:.3f} seconds")
             model.train()
     
     # Final evaluation
