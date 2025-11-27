@@ -90,7 +90,7 @@ class Persister:
             return int(match.group(1)) if match else -1
         return sorted(files, key=parse_tokens)      
 
-    def load_model(self, checkpoint_path: pathlib.Path|str, device: str='cput') -> Any:
+    def load_model(self, checkpoint_path: pathlib.Path|str, device: str='cpu') -> Any:
         """
         Load model from checkpoint.
         
@@ -115,16 +115,25 @@ class Persister:
         train_config = self.load_training_config()
         config=None
         if train_config is not None:
-            if 'model' in train_config:
-                model_config_dict=train_config['model']
-            else :
-                model_config_dict=train_config
+            raw_dict=train_config.get('model',train_config).copy()
+            if 'n_heads' in raw_dict and 'n_head' not in raw_dict:
+                raw_dict['n_head']=raw_dict.pop('n_heads')
+            if 'd_mlp' not in raw_dict and 'd_model' in raw_dict:
+                raw_dict['d_mlp']=4*raw_dict['d_model']
+                print("assuming d_mlp=4*d_model")  
+            try:  
+                valid_keys=set(RawModelConfig.model_fields.keys())
+            except AttributeError:
+                valid_keys=set(RawModelConfig.__fields__.keys())
 
+            filtered_dict={k: v for k, v in raw_dict.items() if k in valid_keys} 
             try:
-                config=RawModelConfig(**model_config_dict)
+                config=RawModelConfig(**filtered_dict)
             except Exception as e:
-                print(f"Error constructing RawModelConfig: {e}")
-                config=_state_dict_to_model_config(state_dict=state_dict)
+                print(f"{e} error constructing rawmodelconfig from json config, fallback to state dict")
+
+                config=_state_dict_to_model_config(state_dict=state_dict)       
+
         if config is None:
             print("No train_config.json found, inferring from state_dict")
             config=_state_dict_to_model_config(state_dict=state_dict)

@@ -353,9 +353,8 @@ class NormTransitionMixin:
             root_node=tree_root, process=self.name, nodes=nodes, depth=depth
         )
     
-    def _compute_emission_probabilities(
-    hmm: Process, state_prob_vector: Float[np.ndarray, "num_states"]
-) -> Float[np.ndarray, "vocab_len"]:
+    def _compute_emission_probabilities( hmm: Process, state_prob_vector: Float[np.ndarray, "num_states"]
+    ) -> Float[np.ndarray, "vocab_len"]:
         """
         Compute the probabilities associated with each emission given the current mixed state.
         """
@@ -365,18 +364,18 @@ class NormTransitionMixin:
         return emission_probs
 
 
-def _compute_next_distribution(
-    epsilon_machine: Float[np.ndarray, "vocab_len num_states num_states"],
-    current_state_prob_vector: Float[np.ndarray, "num_states"],
-    current_emission: int,
-) -> Float[np.ndarray, "num_states"]:
-        """
-        Compute the next mixed state distribution for a given output.
-        """
-        X_next = np.einsum(
-            "sd, s -> d", epsilon_machine[current_emission], current_state_prob_vector
-        )
-        return X_next 
+    def _compute_next_distribution(
+        epsilon_machine: Float[np.ndarray, "vocab_len num_states num_states"],
+        current_state_prob_vector: Float[np.ndarray, "num_states"],
+        current_emission: int,
+    ) -> Float[np.ndarray, "num_states"]:
+            """
+            Compute the next mixed state distribution for a given output.
+            """
+            X_next = np.einsum(
+                "sd, s -> d", epsilon_machine[current_emission], current_state_prob_vector
+            )
+            return X_next 
 
 
 
