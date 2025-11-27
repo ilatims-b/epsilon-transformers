@@ -342,6 +342,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         loss_per_token = criterion(logits.view(-1, logits.size(-1)), target_data.view(-1))
         loss_per_token = loss_per_token.view(input_data.size(0), input_data.size(1))
         mean_loss, relative_loss = _compute_relative_losses(loss_per_token, minimum_cross_entropy)
+        mean_loss=mean_loss/input_data.size(0)
 
         log.update_metrics(train_or_test="train", loss=mean_loss.item())
         optimizer.zero_grad()
