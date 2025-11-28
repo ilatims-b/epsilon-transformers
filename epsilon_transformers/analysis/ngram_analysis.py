@@ -82,7 +82,7 @@ class NGramAnalyzer:
             return torch.tensor([]), torch.tensor([])
         valid_logits=model_logits[:, n-1:, :]    
 
-        # --- 1. Prepare Ground Truth ---
+        #Prepare Ground Truth
         if n == 1:
             # expand to [Batch, Len, V]
             gt_dist = prob_table.view(1, 1, -1).expand(batch_size, seq_len, vocab_size)
@@ -127,9 +127,7 @@ def compute_ngram_kl_divergence(model_logits, sequences, ngram_analyzer, n_value
     
     results = {}
     for n in n_values:
-        kl_per_position, kl_all_values = ngram_analyzer.compute_kl_divergence_batch(
-            model_logits, sequences, n
-        )
+        kl_per_position, kl_all_values = ngram_analyzer.compute_kl_divergence_batch(model_logits, sequences, n)
         
         if kl_all_values.numel() > 0:
             results[f"kl_div_ngram_{n}"] = float(kl_all_values.mean().item())

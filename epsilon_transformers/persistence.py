@@ -202,7 +202,6 @@ class Persister:
     
 
     def save_ngram_data(self, analyzer: 'NGramAnalyzer', tokens_trained: int):
-        """Saves N-Gram probability tables and counts."""
         if analyzer is None:
             return
         
@@ -217,21 +216,16 @@ class Persister:
         print(f"[Persister] Saved N-Gram state to {filename}")
 
     def load_ngram_data(self, tokens_trained: int, device: str = 'cpu') -> Optional[Dict]:
-        """Loads N-Gram state if it exists for the given step."""
-        # Try to find exact match first
         filename = self.save_dir / f"ngram_state_tokens_{tokens_trained}.pt"
         
-        # If not found, try finding the closest previous one (optional, but good for robustness)
         if not filename.exists():
             files = list(self.save_dir.glob("ngram_state_tokens_*.pt"))
             if not files:
                 print("[Persister] No saved N-Gram state found.")
                 return None
-            # Sort by token count
             files.sort(key=lambda p: int(re.search(r"tokens_(\d+)", p.name).group(1)))
-            filename = files[-1] # Take latest
+            filename = files[-1]
             print(f"[Persister] Exact N-Gram match not found, using latest: {filename}")
-
         try:
             data = torch.load(filename, map_location=device)
             return data
