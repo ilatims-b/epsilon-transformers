@@ -198,6 +198,9 @@ def _compute_validation_metrics(
         print(f"[eval] concat: {time.time()-t_concat_start:.3f}s")
         print(f'[kl]computing kl metrics on {len(all_sequences_tensor)} sequences')
         if ngram_analyzer is not None:
+            if not ngram_analyzer.prob_tables and ngram_analyzer.count_tables:
+                print("[kl] warning: prob_tables are empty, rebuilding from count_tables before computing kl")
+                ngram_analyzer.build_prob_tables_from_counts()
             t_ngram_start=time.time()
             if ngram_analyzer.device != device:
                 print(f"[kl] moving ngram analyzer to {device}")
@@ -380,51 +383,53 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     ngram_analyzer, markov_analyzer = _setup_kl_analyzers(
         config=config,
         vocab_size=model.cfg.d_vocab)
+    last_action_batch_tokens=0#for ngram analyzer
 
     # --- BUILD N-GRAM ANALYZER ON TRAIN DATA ---
-    if ngram_analyzer is not None:
-        print(f"[Training] Building N-Gram Analyzer statistics from training data...")
-        t_ngram_build_start=time.time()
-        # 1. Collect all training data into one tensor
-        all_train_sequences = []
-        for input_data, _ in tqdm(train_dataloader, desc="Collecting Train Data"):
-            all_train_sequences.append(input_data)
+    # if ngram_analyzer is not None:
+    #     print(f"[Training] Building N-Gram Analyzer statistics from training data...")
+    #     t_ngram_build_start=time.time()
+    #     # 1. Collect all training data into one tensor
+    #     all_train_sequences = []
+    #     for input_data, _ in tqdm(train_dataloader, desc="Collecting Train Data"):
+    #         all_train_sequences.append(input_data)
         
-        # Shape: [Total_Train_Samples, Seq_Len]
-        full_train_tensor = torch.cat(all_train_sequences, dim=0)
+    #     # Shape: [Total_Train_Samples, Seq_Len]
+    #     full_train_tensor = torch.cat(all_train_sequences, dim=0)
         
-        # 2. Move to GPU for fast build (if it fits)
-        # Note: If OOM on P100, move to 'cpu' instead.
-        build_device = device
-        try:
-            full_train_tensor = full_train_tensor.to(build_device)
-            ngram_analyzer.build_from_sequences(full_train_tensor)
-            persister.save_ngram_data(ngram_analyzer, tokens_trained=(full_train_tensor.shape[0]*full_train_tensor.shape[1]))
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print("[Warning] OOM during N-Gram build on GPU. Falling back to CPU.")
-                torch.cuda.empty_cache()
-                ngram_analyzer.build_from_sequences(full_train_tensor.to('cpu'))
-                # Move tables back to GPU for eval later
-                for n in ngram_analyzer.prob_tables:
-                    ngram_analyzer.prob_tables[n] = ngram_analyzer.prob_tables[n].to(device)
-                    ngram_analyzer.device = device
-            else:
-                raise e
+    #     # 2. Move to GPU for fast build (if it fits)
+    #     # Note: If OOM on P100, move to 'cpu' instead.
+    #     build_device = device
+    #     try:
+    #         full_train_tensor = full_train_tensor.to(build_device)
+    #         ngram_analyzer.build_from_sequences(full_train_tensor)
+    #         persister.save_ngram_data(ngram_analyzer, tokens_trained=(full_train_tensor.shape[0]*full_train_tensor.shape[1]))
+    #     except RuntimeError as e:
+    #         if "out of memory" in str(e):
+    #             print("[Warning] OOM during N-Gram build on GPU. Falling back to CPU.")
+    #             torch.cuda.empty_cache()
+    #             ngram_analyzer.build_from_sequences(full_train_tensor.to('cpu'))
+    #             # Move tables back to GPU for eval later
+    #             for n in ngram_analyzer.prob_tables:
+    #                 ngram_analyzer.prob_tables[n] = ngram_analyzer.prob_tables[n].to(device)
+    #                 ngram_analyzer.device = device
+    #         else:
+    #             raise e
         
-        # Free memory
-        del full_train_tensor
-        del all_train_sequences
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
-        print(f"[Training] N-Gram build time: {time.time()-t_ngram_build_start:.3f}s")
-        _set_random_seed(config.seed)
-        train_dataloader=config.dataset.to_dataloader(
-            sequence_length=model.cfg.n_ctx, train=True
-        )
+    #     # Free memory
+    #     del full_train_tensor
+    #     del all_train_sequences
+    #     if device.type == 'cuda':
+    #         torch.cuda.empty_cache()
+    #     print(f"[Training] N-Gram build time: {time.time()-t_ngram_build_start:.3f}s")
+    #     _set_random_seed(config.seed)
+    #     train_dataloader=config.dataset.to_dataloader(
+    #         sequence_length=model.cfg.n_ctx, train=True
+    #     )
 
     model.train()
     tokens_trained_so_far = 0
+    train_sequences_since_last_action=[]
 
     # running_train_loss=0.0
     # running_batch_count= 0
@@ -437,6 +442,8 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         input_data = input_data.to(device)
         print(input_data[0].shape)
         target_data = target_data.to(device)
+        if ngram_analyzer is not None:
+            train_sequences_since_last_action.append(input_data)
         logits = model(input_data, return_type="logits")
         criterion=nn.CrossEntropyLoss(reduction="none")
         loss_per_token = criterion(logits.view(-1, logits.size(-1)), target_data.view(-1))
@@ -466,6 +473,79 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         ):
             model.eval()
             t0 = time.time()
+            if ngram_analyzer is not None and len(train_sequences_since_last_action)>0:
+                print(f"[train] merging ngram analyzer count tables from {last_action_batch_tokens} to {tokens_trained_so_far}")
+                new_train_tensor=torch.cat(train_sequences_since_last_action,dim=0)
+                build_device=device
+                try:
+                    new_train_tensor=new_train_tensor.to(build_device)
+                    temp_analyzer=NGramAnalyzer(vocab_size=model.cfg.d_vocab,n_grams=ngram_analyzer.n_grams)
+                    temp_analyzer.build_from_sequences(new_train_tensor)
+                    if last_action_batch_tokens==0:
+                        prev_data=persister.load_ngram_data(tokens_trained=0,device=device)
+                        if prev_data is not None:
+                            ngram_analyzer.count_tables=prev_data['count_tables']
+                            ngram_analyzer.n_grams=prev_data['n_grams']
+                            ngram_analyzer.vocab_size=prev_data['vocab_size']
+                            ngram_analyzer.device=device
+                            ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)
+                        else:
+                            print("[train] no previous ngram data found, using temp as current")
+                            ngram_analyzer.count_tables=temp_analyzer.count_tables
+                            ngram_analyzer.n_grams=temp_analyzer.n_grams
+                            ngram_analyzer.vocab_size=temp_analyzer.vocab_size
+                            ngram_analyzer.device=device
+                    else:
+                        ngram_analyzer.count_tables=temp_analyzer.count_tables
+                        ngram_analyzer.n_grams=temp_analyzer.n_grams
+                        ngram_analyzer.vocab_size=temp_analyzer.vocab_size
+                        ngram_analyzer.device=device
+                    persister.save_ngram_data(ngram_analyzer,tokens_trained=tokens_trained_so_far)
+                    print(f"[train] ngram analyzer count tables merged and saved")
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        print("warning: oom during ngram build, falling back to cpu") 
+                        torch.cuda.empty_cache()
+                        new_train_tensor=new_train_tensor.to('cpu')
+                        temp_analyzer = NGramAnalyzer(vocab_size=model.cfg.d_vocab, n_grams=ngram_analyzer.n_grams)
+                        temp_analyzer.build_from_sequences(new_train_tensor)
+                        
+                        if last_action_batch_tokens > 0:
+                            prev_data = persister.load_ngram_data(last_action_batch_tokens, device='cpu')
+                            if prev_data is not None:
+                                ngram_analyzer.count_tables = prev_data['count_tables']
+                                ngram_analyzer.n_grams = prev_data['n_grams']
+                                ngram_analyzer.vocab_size = prev_data['vocab_size']
+                                ngram_analyzer.device = torch.device('cpu')
+                                ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)
+                            else:
+                                ngram_analyzer.count_tables = temp_analyzer.count_tables
+                                ngram_analyzer.prob_tables = temp_analyzer.prob_tables
+                                ngram_analyzer.device = torch.device('cpu')
+                        else:
+                            ngram_analyzer.count_tables = temp_analyzer.count_tables
+                            ngram_analyzer.prob_tables = temp_analyzer.prob_tables
+                            ngram_analyzer.device = torch.device('cpu')
+                        
+                        # Move tables back to GPU for eval
+                        for n in ngram_analyzer.prob_tables:
+                            ngram_analyzer.prob_tables[n] = ngram_analyzer.prob_tables[n].to(device)
+                        ngram_analyzer.device = device
+                        
+                        persister.save_ngram_data(ngram_analyzer, tokens_trained=tokens_trained_so_far)
+                    else:
+                        raise e
+                
+                # Free memory
+                del new_train_tensor
+                del train_sequences_since_last_action
+                train_sequences_since_last_action = []
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                
+                # Update last action batch tracker
+                last_action_batch_tokens = tokens_trained_so_far   
+
             _evaluate_log_and_persist(
                 persister=persister,
                 model=model,
@@ -478,14 +558,61 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
                 markov_analyzer=markov_analyzer,
                 val_process=val_process,
                 return_per_position=return_per_position,
-                minimum_cross_entropy=minimum_cross_entropy
-            )
+                minimum_cross_entropy=minimum_cross_entropy)
             t1 = time.time()
             #print(f"[TIMING] Full evaluation step took {t1 - t0:.3f} seconds")
             model.train()
     
     # Final evaluation
     model.eval()
+    #build final ngram table for remaining sequences
+    if ngram_analyzer is not None and len(train_sequences_since_last_action) > 0:
+        print(f"[Training] Building final N-Gram table...")
+        new_train_tensor = torch.cat(train_sequences_since_last_action, dim=0)
+        
+        try:
+            new_train_tensor = new_train_tensor.to(device)
+            temp_analyzer = NGramAnalyzer(vocab_size=model.cfg.d_vocab, n_grams=ngram_analyzer.n_grams)
+            temp_analyzer.build_from_sequences(new_train_tensor)
+            
+            if last_action_batch_tokens > 0:
+                prev_data = persister.load_ngram_data(last_action_batch_tokens, device=str(device))
+                if prev_data is not None:
+                    ngram_analyzer.count_tables = prev_data['count_tables']
+                    ngram_analyzer.n_grams = prev_data['n_grams']
+                    ngram_analyzer.vocab_size = prev_data['vocab_size']
+                    ngram_analyzer.device = device
+                    ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)
+                else:
+                    ngram_analyzer.count_tables = temp_analyzer.count_tables
+                    ngram_analyzer.prob_tables = temp_analyzer.prob_tables
+            else:
+                ngram_analyzer.count_tables = temp_analyzer.count_tables
+                ngram_analyzer.prob_tables = temp_analyzer.prob_tables
+            
+            persister.save_ngram_data(ngram_analyzer, tokens_trained=tokens_trained_so_far)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                torch.cuda.empty_cache()
+                new_train_tensor = new_train_tensor.to('cpu')
+                temp_analyzer = NGramAnalyzer(vocab_size=model.cfg.d_vocab, n_grams=ngram_analyzer.n_grams)
+                temp_analyzer.build_from_sequences(new_train_tensor)
+                
+                if last_action_batch_tokens > 0:
+                    prev_data = persister.load_ngram_data(last_action_batch_tokens, device='cpu')
+                    if prev_data is not None:
+                        ngram_analyzer.count_tables = prev_data['count_tables']
+                        ngram_analyzer.n_grams = prev_data['n_grams']
+                        ngram_analyzer.vocab_size = prev_data['vocab_size']
+                        ngram_analyzer.device = torch.device('cpu')
+                        ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)
+                
+                for n in ngram_analyzer.prob_tables:
+                    ngram_analyzer.prob_tables[n] = ngram_analyzer.prob_tables[n].to(device)
+                ngram_analyzer.device = device
+                
+                persister.save_ngram_data(ngram_analyzer, tokens_trained=tokens_trained_so_far)
+    
     _evaluate_log_and_persist(
         persister=persister,
         model=model,

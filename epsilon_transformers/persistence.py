@@ -205,33 +205,38 @@ class Persister:
         if analyzer is None:
             return
         
-        filename = self.save_dir / f"ngram_state_tokens_{tokens_trained}.pt"
+        filename = self.save_dir / f"ngram_counts_tokens_{tokens_trained}.pt"
         data = {
-            'prob_tables': analyzer.prob_tables,
-            #'count_tables': analyzer.count_tables,
+            #'prob_tables': analyzer.prob_tables,
+            'count_tables': analyzer.count_tables,
             'n_grams': analyzer.n_grams,
             'vocab_size': analyzer.vocab_size
         }
         torch.save(data, filename)
-        print(f"[Persister] Saved N-Gram state to {filename}")
+        print(f"[Persister] Saved N-Gram count tables to {filename}")
 
     def load_ngram_data(self, tokens_trained: int, device: str = 'cpu') -> Optional[Dict]:
-        filename = self.save_dir / f"ngram_state_tokens_{tokens_trained}.pt"
+        filename = self.save_dir / f"ngram_counts_tokens_{tokens_trained}.pt"
         
         if not filename.exists():
-            files = list(self.save_dir.glob("ngram_state_tokens_*.pt"))
+            files = list(self.save_dir.glob("ngram_counts_tokens_*.pt"))
             if not files:
-                print("[Persister] No saved N-Gram state found.")
+                print("[Persister] No saved N-Gram counts found.")
                 return None
-            files.sort(key=lambda p: int(re.search(r"tokens_(\d+)", p.name).group(1)))
-            filename = files[-1]
-            print(f"[Persister] Exact N-Gram match not found, using latest: {filename}")
+            def parse_tokens(p):
+                match=re.search(r"tokens_(\d+)",p.name)
+                return int(match.group(1)) if match else -1    
+            files.sort(key=parse_tokens)
+            valid_files=[f for f in files if parse_tokens(f)< tokens_trained]
+            if not valid_files:
+                print("[Persister] No saved N-Gram counts found for this tokens_trained.")
+                return None
         try:
-            data = torch.load(filename, map_location=device)
+            data=toch.load(filename,map_location=device) 
             return data
         except Exception as e:
-            print(f"[Persister] Failed to load N-Gram data: {e}")
-            return None
+            print(f"[persister]failed to load ngram counts:{e}")   
+            return None        
 
     
 def _state_dict_to_model_config(state_dict: OrderedDict, n_ctx: int = 10) -> RawModelConfig:

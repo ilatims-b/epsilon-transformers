@@ -17,6 +17,7 @@ class NGramAnalyzer:
         # Store probability tables directly on the device as tensors
         # Key: n -> Value: Tensor of shape [V, V, ..., V] (n times)
         self.prob_tables: Dict[int, torch.Tensor] = {}
+        self.count_tables:Dict[int,torch.Tensor]={}
         self.device = torch.device('cpu') 
 
     def build_from_sequences(self, sequences: torch.Tensor) -> None:
@@ -53,15 +54,33 @@ class NGramAnalyzer:
             
             # 5. Reshape back to [V, V, ..., V]
             dense_counts = counts.view([self.vocab_size] * n)
-            
+            self.count_tables[n]=dense_counts
+        self.build_prob_tables_from_counts()
+        print(f"[Ngramanalyzer]Build complete.")
             # 6. Normalize over last dimension (next token)
+            # dense_counts += 1e-10 # Smoothing
+            # sums = dense_counts.sum(dim=-1, keepdim=True)
+            # probs = dense_counts / sums
+    def build_prob_tables_from_counts(self):
+        self.prob_tables={}
+        for n in self.count_tables:
+            if n not in self.count_tables:
+                continue
+            dense_counts = self.count_tables[n].clone()
             dense_counts += 1e-10 # Smoothing
             sums = dense_counts.sum(dim=-1, keepdim=True)
             probs = dense_counts / sums
-            
             self.prob_tables[n] = probs
-        
-        print(f"[NGramAnalyzer] Build complete.")
+    def merge_ngram_tables(self, other_count_tables:Dict[int,torch.Tensor]):
+        print("merging ngram tables")
+        for n in self.n_grams:
+            if n in other_count_tables:
+                if n in self.count_tables:
+                    self.count_tables[n]=self.count_tables[n]+other_count_tables[n]
+                else:
+                    self.count_tables[n]=other_count_tables[n].clone()
+        self.build_prob_tables_from_counts()
+        print("ngram tables merged")
 
     def compute_kl_divergence_batch(self, model_logits: torch.Tensor, sequences: torch.Tensor, n: int):
         """
