@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal, Optional, List as PyList, Dict
 from pydantic import BaseModel, field_validator, model_validator
 import pathlib
 import torch
@@ -20,7 +20,7 @@ from epsilon_transformers.training.configs.model_configs import RawModelConfig
 
 
 # ============================================================================
-# EXISTING CONFIGS (from repo - DO NOT MODIFY)
+# EXISTING CONFIGS (DO NOT MODIFY please)
 # ============================================================================
 
 Optimizer = torch.optim.Adam | torch.optim.SGD
@@ -104,99 +104,163 @@ class ProcessDatasetConfig(Config):
 
 @dataclass
 class Log:
-    train_loss: float | None
-    test_loss: float | None
+    """
+    Revised Log class that stores lists of values to avoid sum/avg confusion.
+    """
     config: "LoggingConfig"
     
-    metrics: dict[str, dict[str, float]] = field(default_factory=lambda: {"train": {}, "test": {}})
-
+    # Store lists of floats instead of sums
+    metrics: Dict[str, Dict[str, PyList[float]]] = field(default_factory=lambda: {"train": {}, "test": {}})
 
     def reset(self):
-        if self.config.train_loss:
-            self.train_loss = 0.0
-        else:
-            self.train_loss = None
+        self.metrics = {"train": {}, "test": {}}
 
-        if self.config.test_loss:
-            self.test_loss = 0.0
-        else:
-            self.test_loss = None
-
-        self.metrics = {"train": {}, "test": {}}    
-
-    def update_metrics(self, train_or_test: Literal["train", "test"], loss: float, metric_name: Optional[str] = 'loss'):
-        if metric_name == 'loss':
-            if train_or_test == "train" and self.config.train_loss:
-                assert self.train_loss is not None
-                self.train_loss += loss
-            elif train_or_test == "test" and self.config.test_loss:
-                assert self.test_loss is not None
-                self.test_loss += loss
-            else:
-                raise ValueError(f"Invalid train_or_test: {train_or_test}")
-            
+    def update_metrics(self, train_or_test: Literal["train", "test"], loss: float, metric_name: str = 'loss'):
         if train_or_test not in self.metrics:
             self.metrics[train_or_test] = {}
         if metric_name not in self.metrics[train_or_test]:
-            self.metrics[train_or_test][metric_name] = 0.0
-        self.metrics[train_or_test][metric_name] += float(loss)   
+            self.metrics[train_or_test][metric_name] = []
+            
+        self.metrics[train_or_test][metric_name].append(float(loss))
+
+    def get_aggregated_metrics(self) -> Dict[str, Dict[str, float]]:
+        """Calculate averages for all stored metrics."""
+        agg = {}
+        for split, metrics_dict in self.metrics.items():
+            agg[split] = {}
+            for name, values in metrics_dict.items():
+                if values:
+                    agg[split][name] = sum(values) / len(values)
+                else:
+                    agg[split][name] = 0.0
+        return agg
 
     def persist(self):
+        """Log averaged metrics to WandB."""
         if self.config.wandb:
-            wandb.log(
-                {
-                    k: v
-                    for k, v in asdict(self).items()
-                    if v is not None and not isinstance(v, LoggingConfig)
-                }
-            )
-
-        if self.metrics:
-                flat = {}
-                for split, md in self.metrics.items():
-                    for name, val in md.items():
-                        flat[f"{split}/{name}"] = val
-                if flat:
-                    wandb.log(flat)
-    
-        if self.config.local is not None:
-            raise NotImplementedError
-
+            agg_metrics = self.get_aggregated_metrics()
+            flat = {}
+            for split, md in agg_metrics.items():
+                for name, val in md.items():
+                    flat[f"{split}/{name}"] = val
+            
+            if flat:
+                wandb.log(flat)
 
 class LoggingConfig(Config):
     local: pathlib.Path | None = None
     wandb: bool = True
     project_name: str | None = None
-    wandb_api_key: str | None = None  # NEW: Explicit API key field
-    train_loss: bool = True
-    test_loss: bool = True
-    run_name: str | None= None
+    wandb_api_key: str | None = None
+    run_name: str | None = None
 
     @field_validator("project_name")
     @classmethod
     def validate_wandb_config(cls, v, info):
-        """Validate that project_name is set if wandb is enabled."""
-        wandb_enabled = info.data.get("wandb", False)
-        if wandb_enabled and not v:
-            raise ValueError("project_name must be provided if wandb logging is enabled")
+        if info.data.get("wandb", False) and not v:
+            raise ValueError("project_name must be provided if wandb is enabled")
         return v
 
     def close(self):
-        if self.wandb:
-            wandb.finish()
-        if self.local is not None:
-            raise NotImplementedError
+        if self.wandb: wandb.finish()
 
     def init(self) -> Log:
-        return Log(
-            config=self,
-            train_loss=0.0 if self.train_loss else None,
-            test_loss=0.0 if self.test_loss else None,
-        )
+        return Log(config=self)
+
+# class Log:
+#     train_loss: float | None
+#     test_loss: float | None
+#     config: "LoggingConfig"
+    
+#     metrics: dict[str, dict[str, PyList[float]]] = field(default_factory=lambda: {"train": {}, "test": {}})
+
+
+#     def reset(self):
+#         if self.config.train_loss:
+#             self.train_loss = 0.0
+#         else:
+#             self.train_loss = None
+
+#         if self.config.test_loss:
+#             self.test_loss = 0.0
+#         else:
+#             self.test_loss = None
+
+#         self.metrics = {"train": {}, "test": {}}    
+
+#     def update_metrics(self, train_or_test: Literal["train", "test"], loss: float, metric_name: Optional[str] = 'loss'):
+#         if metric_name == 'loss':
+#             if train_or_test == "train" and self.config.train_loss:
+#                 assert self.train_loss is not None
+#                 self.train_loss += loss
+#             elif train_or_test == "test" and self.config.test_loss:
+#                 assert self.test_loss is not None
+#                 self.test_loss += loss
+#             else:
+#                 raise ValueError(f"Invalid train_or_test: {train_or_test}")
+            
+#         if train_or_test not in self.metrics:
+#             self.metrics[train_or_test] = {}
+#         if metric_name not in self.metrics[train_or_test]:
+#             self.metrics[train_or_test][metric_name] = 0.0
+#         self.metrics[train_or_test][metric_name] += float(loss)   
+
+#     def persist(self):
+#         if self.config.wandb:
+#             wandb.log(
+#                 {
+#                     k: v
+#                     for k, v in asdict(self).items()
+#                     if v is not None and not isinstance(v, LoggingConfig)
+#                 }
+#             )
+
+#         if self.metrics:
+#                 flat = {}
+#                 for split, md in self.metrics.items():
+#                     for name, val in md.items():
+#                         flat[f"{split}/{name}"] = val
+#                 if flat:
+#                     wandb.log(flat)
+    
+#         if self.config.local is not None:
+#             raise NotImplementedError
+
+
+# class LoggingConfig(Config):
+#     local: pathlib.Path | None = None
+#     wandb: bool = True
+#     project_name: str | None = None
+#     wandb_api_key: str | None = None  # NEW: Explicit API key field
+#     train_loss: bool = True
+#     test_loss: bool = True
+#     run_name: str | None= None
+
+#     @field_validator("project_name")
+#     @classmethod
+#     def validate_wandb_config(cls, v, info):
+#         """Validate that project_name is set if wandb is enabled."""
+#         wandb_enabled = info.data.get("wandb", False)
+#         if wandb_enabled and not v:
+#             raise ValueError("project_name must be provided if wandb logging is enabled")
+#         return v
+
+#     def close(self):
+#         if self.wandb:
+#             wandb.finish()
+#         if self.local is not None:
+#             raise NotImplementedError
+
+#     def init(self) -> Log:
+#         return Log(
+#             config=self,
+#             train_loss=0.0 if self.train_loss else None,
+#             test_loss=0.0 if self.test_loss else None,
+#         )
 
 
 # ============================================================================
-# NEW: KL ANALYSIS CONFIGS
+# KL ANALYSIS CONFIGS
 # ============================================================================
 
 @dataclass
@@ -229,7 +293,7 @@ class KLAnalysisConfig:
 
 
 # ============================================================================
-# EXTENDED: TrainConfig WITH KL Analysis
+# TrainConfig WITH KL Analysis
 # ============================================================================
 
 class TrainConfig(Config):

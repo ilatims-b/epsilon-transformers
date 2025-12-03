@@ -81,8 +81,6 @@ logging_config = LoggingConfig(
     wandb_api_key="9df77e7cbad36f3323af2ea208aa4027a970df97",
     run_name="trial",# NEW!
     # OR use environment variable: export WANDB_API_KEY="YOUR_KEY"
-    train_loss=True,
-    test_loss=True,
 )
 
 

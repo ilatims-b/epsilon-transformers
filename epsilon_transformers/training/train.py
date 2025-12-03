@@ -26,11 +26,6 @@ from epsilon_transformers.process import Process
 
 from epsilon_transformers.process.processes import PROCESS_REGISTRY
 
-# def torch_to_cupy(tensor):
-#     import cupy as cp
-#     from torch.utils.dlpack import to_dlpack
-#     from cupy import from_dlpack
-#     return from_dlpack(to_dlpack(tensor))
     
 def get_process_object(process_name: str, process_params: dict):
     """Return an instantiated Process object given name and parameters."""
@@ -71,9 +66,6 @@ def _check_if_action_batch(
     perform_action_every_n_batches = perform_action_every_n_tokens // tokens_per_batch
     return (batch_idx + 1) % perform_action_every_n_batches == 0
 
-
-def _setup_persister(config: TrainConfig):
-    return config.persistance.init()
 
 
 def _setup_kl_analyzers(
@@ -138,10 +130,6 @@ def _compute_validation_metrics(
 
     all_logits = []
     all_sequences = []
-
-    total_loss = 0.0
-    total_relative_loss_per_pos = None
-    total_relative_loss = 0.0
     num_batches = 0 
 
     t_start_eval=time.time()
@@ -160,33 +148,20 @@ def _compute_validation_metrics(
             loss=loss.view(input_data.shape[0],input_data.shape[1])
             
             mean_loss, relative_loss=_compute_relative_losses(loss,minimum_cross_entropy)
-            total_loss+=mean_loss.item()
-            total_relative_loss = relative_loss.mean().item()
-
-            if total_relative_loss_per_pos is None:
-                total_relative_loss_per_pos = torch.zeros_like(relative_loss)
             
-            total_relative_loss_per_pos += relative_loss
-            num_batches += 1
-
+            #  Log per-batch metrics (Log class will average them later)
+            log.update_metrics("test", loss=mean_loss.item(), metric_name="loss")
+            log.update_metrics("test", loss=relative_loss.mean().item(), metric_name="relative_loss")
+            for i, rel_val in enumerate(relative_loss):
+                log.update_metrics("test", loss=rel_val.item(), metric_name=f"relative_loss_{i}")
+            
+            # Collect for KL analysis
             all_logits.append(logits)
             all_sequences.append(input_data)
+
             t1 = time.time()
             t_model_fwd += (t1 - t0)
         print(f"[eval] model forward time: {t_model_fwd:.3f} seconds over {num_batches} batches")    
-
-        if num_batches > 0:
-            avg_loss = total_loss / num_batches
-            avg_relative_loss_per_pos = total_relative_loss_per_pos / num_batches
-            avg_relative_loss=total_relative_loss/num_batches    
-            log.update_metrics("test", metric_name="loss", loss=avg_loss)
-            log.update_metrics("test", metric_name="relative_loss", loss=avg_relative_loss)
-            for i, rel_val in enumerate(avg_relative_loss_per_pos):
-                log.update_metrics("test", metric_name=f"relative_loss_{i}", loss=rel_val.item())
-
-    
-    avg_loss = total_loss / max(num_batches, 1)
-    log.update_metrics("test", loss=avg_loss)
     
     if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits)>0:
         t_concat_start=time.time()
@@ -260,18 +235,24 @@ def _evaluate_log_and_persist(
             return_per_position=return_per_position,
             minimum_cross_entropy=minimum_cross_entropy
         )
-    
+    aggregated_metrics=log.get_aggregated_metrics()
     if verbose:
-        print(f"[Step {tokens_trained}] Training loss: {log.train_loss:.6f}") 
+        train_loss = aggregated_metrics.get("train", {}).get("loss", 0.0)
+        test_loss = aggregated_metrics.get("test", {}).get("loss", 0.0)
+        tqdm.write(f"[Step {tokens_trained}] Train Loss: {train_loss:.4f} | Test Loss: {test_loss:.4f}")
 
-    if "train" in log.metrics and log.metrics["train"]:
-        persister.save_metrics_to_csv("train", log.metrics["train"], tokens_trained)
-    if "test" in log.metrics and log.metrics["test"]:
-        persister.save_metrics_to_csv("test", log.metrics["test"], tokens_trained)
+    # 3. Persist Metrics to CSV
+    if "train" in aggregated_metrics:
+        persister.save_metrics_to_csv("train", aggregated_metrics["train"], tokens_trained)
+    if "test" in aggregated_metrics:
+        persister.save_metrics_to_csv("test", aggregated_metrics["test"], tokens_trained)
+        
+    # 4. Persist to WandB and Save Checkpoint
+    log.persist() # Logs averages to WandB
+    persister.save_model(model, tokens_trained, metadata=aggregated_metrics)
 
-    log.persist()
-    persister.save_model(model, tokens_trained, metadata=log.metrics)
     log.reset()
+
 
 
 def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
@@ -285,8 +266,10 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     
     _set_random_seed(config.seed)
     
-    # Initialize logger (handles wandb setup)
+    # Initialize logger and persister(handles wandb setup)
     log = config.init_logger()
+    persister=config.persistance.init()
+    persister.save_config(config.model_dump())
     
     # Initialize model and optimizer
     model = config.model.to_hooked_transformer(device=device, seed=config.seed)
@@ -298,9 +281,6 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     )
 
     print(f"[Training] Dataloaders created")
-    # Initialize persistence
-    persister = _setup_persister(config)
-    persister.save_config(config.model_dump())
     
     # Initialize KL analyzers
     val_process = get_process_object(config.dataset.process, config.dataset.process_params)
@@ -328,10 +308,10 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         criterion=nn.CrossEntropyLoss(reduction="none")
         loss_per_token = criterion(logits.view(-1, logits.size(-1)), target_data.view(-1))
         loss_per_token = loss_per_token.view(input_data.size(0), input_data.size(1))
-        mean_loss, relative_loss = _compute_relative_losses(loss_per_token, minimum_cross_entropy)
-        mean_loss=mean_loss/input_data.size(0)
+        mean_loss, _ = _compute_relative_losses(loss_per_token, minimum_cross_entropy)
 
-        log.update_metrics(train_or_test="train", loss=mean_loss.item())
+        log.update_metrics(train_or_test="train", loss=mean_loss.item(),metric_name="loss")
+
         optimizer.zero_grad()
         mean_loss.backward()
         optimizer.step()
@@ -356,65 +336,14 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
             if ngram_analyzer is not None and len(train_sequences_since_last_action)>0:
                 print(f"[train] merging ngram analyzer count tables from {last_action_batch_tokens} to {tokens_trained_so_far}")
                 new_train_tensor=torch.cat(train_sequences_since_last_action,dim=0)
-                build_device=device
-                try:
-                    new_train_tensor=new_train_tensor.to(build_device)
-                    temp_analyzer=NGramAnalyzer(vocab_size=model.cfg.d_vocab,n_grams=ngram_analyzer.n_grams)
-                    temp_analyzer.build_from_sequences(new_train_tensor)
-                    if last_action_batch_tokens==0:
-                        prev_data=persister.load_ngram_data(tokens_trained=0,device=device)
-                        if prev_data is not None:
-                            ngram_analyzer.count_tables=prev_data['count_tables']
-                            ngram_analyzer.n_grams=prev_data['n_grams']
-                            ngram_analyzer.vocab_size=prev_data['vocab_size']
-                            ngram_analyzer.device=device
-                            ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)
-                        else:
-                            print("[train] no previous ngram data found, using temp as current")
-                            ngram_analyzer.count_tables=temp_analyzer.count_tables
-                            ngram_analyzer.n_grams=temp_analyzer.n_grams
-                            ngram_analyzer.vocab_size=temp_analyzer.vocab_size
-                            ngram_analyzer.device=device
-                    else:
-                        ngram_analyzer.count_tables=temp_analyzer.count_tables
-                        ngram_analyzer.n_grams=temp_analyzer.n_grams
-                        ngram_analyzer.vocab_size=temp_analyzer.vocab_size
-                        ngram_analyzer.device=device
-                    persister.save_ngram_data(ngram_analyzer,tokens_trained=tokens_trained_so_far)
-                    print(f"[train] ngram analyzer count tables merged and saved")
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        print("warning: oom during ngram build, falling back to cpu") 
-                        torch.cuda.empty_cache()
-                        new_train_tensor=new_train_tensor.to('cpu')
-                        temp_analyzer = NGramAnalyzer(vocab_size=model.cfg.d_vocab, n_grams=ngram_analyzer.n_grams)
-                        temp_analyzer.build_from_sequences(new_train_tensor)
-                        
-                        if last_action_batch_tokens > 0:
-                            prev_data = persister.load_ngram_data(last_action_batch_tokens, device='cpu')
-                            if prev_data is not None:
-                                ngram_analyzer.count_tables = prev_data['count_tables']
-                                ngram_analyzer.n_grams = prev_data['n_grams']
-                                ngram_analyzer.vocab_size = prev_data['vocab_size']
-                                ngram_analyzer.device = torch.device('cpu')
-                                ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)
-                            else:
-                                ngram_analyzer.count_tables = temp_analyzer.count_tables
-                                ngram_analyzer.prob_tables = temp_analyzer.prob_tables
-                                ngram_analyzer.device = torch.device('cpu')
-                        else:
-                            ngram_analyzer.count_tables = temp_analyzer.count_tables
-                            ngram_analyzer.prob_tables = temp_analyzer.prob_tables
-                            ngram_analyzer.device = torch.device('cpu')
-                        
-                        # Move tables back to GPU for eval
-                        for n in ngram_analyzer.prob_tables:
-                            ngram_analyzer.prob_tables[n] = ngram_analyzer.prob_tables[n].to(device)
-                        ngram_analyzer.device = device
-                        
-                        persister.save_ngram_data(ngram_analyzer, tokens_trained=tokens_trained_so_far)
-                    else:
-                        raise e
+                temp_analyzer=NGramAnalyzer(vocab_size=model.cfg.d_vocab,n_grams=ngram_analyzer.n_grams)
+                temp_analyzer.build_from_sequences(new_train_tensor)#on same device as new_train_tensor
+                if last_action_batch_tokens==0:
+                    ngram_analyzer.count_tables=temp_analyzer.count_tables
+                else:
+                    ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)    
+                persister.save_ngram_data(ngram_analyzer,tokens_trained=tokens_trained_so_far)
+                print(f"[train] ngram analyzer count tables merged and saved")
                 
                 # Free memory
                 del new_train_tensor
@@ -449,49 +378,14 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     if ngram_analyzer is not None and len(train_sequences_since_last_action) > 0:
         print(f"[Training] Building final N-Gram table...")
         new_train_tensor = torch.cat(train_sequences_since_last_action, dim=0)
+        temp_analyzer=NGramAnalyzer(vocab_size=model.cfg.d_vocab,n_grams=ngram_analyzer.n_grams)
+        temp_analyzer.build_from_sequences(new_train_tensor)#on same device as new_train_tensor
+        if last_action_batch_tokens==0:
+            ngram_analyzer.count_tables=temp_analyzer.count_tables
+        else:
+            ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)   
         
-        try:
-            new_train_tensor = new_train_tensor.to(device)
-            temp_analyzer = NGramAnalyzer(vocab_size=model.cfg.d_vocab, n_grams=ngram_analyzer.n_grams)
-            temp_analyzer.build_from_sequences(new_train_tensor)
-            
-            if last_action_batch_tokens > 0:
-                prev_data = persister.load_ngram_data(last_action_batch_tokens, device=str(device))
-                if prev_data is not None:
-                    ngram_analyzer.count_tables = prev_data['count_tables']
-                    ngram_analyzer.n_grams = prev_data['n_grams']
-                    ngram_analyzer.vocab_size = prev_data['vocab_size']
-                    ngram_analyzer.device = device
-                    ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)
-                else:
-                    ngram_analyzer.count_tables = temp_analyzer.count_tables
-                    ngram_analyzer.prob_tables = temp_analyzer.prob_tables
-            else:
-                ngram_analyzer.count_tables = temp_analyzer.count_tables
-                ngram_analyzer.prob_tables = temp_analyzer.prob_tables
-            
-            persister.save_ngram_data(ngram_analyzer, tokens_trained=tokens_trained_so_far)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                torch.cuda.empty_cache()
-                new_train_tensor = new_train_tensor.to('cpu')
-                temp_analyzer = NGramAnalyzer(vocab_size=model.cfg.d_vocab, n_grams=ngram_analyzer.n_grams)
-                temp_analyzer.build_from_sequences(new_train_tensor)
-                
-                if last_action_batch_tokens > 0:
-                    prev_data = persister.load_ngram_data(last_action_batch_tokens, device='cpu')
-                    if prev_data is not None:
-                        ngram_analyzer.count_tables = prev_data['count_tables']
-                        ngram_analyzer.n_grams = prev_data['n_grams']
-                        ngram_analyzer.vocab_size = prev_data['vocab_size']
-                        ngram_analyzer.device = torch.device('cpu')
-                        ngram_analyzer.merge_ngram_tables(temp_analyzer.count_tables)
-                
-                for n in ngram_analyzer.prob_tables:
-                    ngram_analyzer.prob_tables[n] = ngram_analyzer.prob_tables[n].to(device)
-                ngram_analyzer.device = device
-                
-                persister.save_ngram_data(ngram_analyzer, tokens_trained=tokens_trained_so_far)
+        persister.save_ngram_data(ngram_analyzer, tokens_trained=tokens_trained_so_far)
     
     _evaluate_log_and_persist(
         persister=persister,
