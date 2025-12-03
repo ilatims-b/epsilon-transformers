@@ -50,6 +50,31 @@ class ProcessDataset(IterableDataset):
                 next(self.samples) for _ in range(self.sequence_length + 1)
             ]
             yield (process_history[:-1], process_history[1:])
+    # def __iter__(self):
+    #     samples_yielded = 0
+        
+    #     while samples_yielded < self.num_samples:
+    #         # 1. Calculate chunk size
+    #         current_chunk_size = min(self.chunk_size, self.num_samples - samples_yielded)
+            
+    #         # 2. Generate a large batch on GPU [chunk_size, sequence_length + 1]
+    #         # We ask for sequence_length + 1 so we can split into (Input, Target)
+    #         batch_data = self.process.generate_batch(
+    #             batch_size=current_chunk_size, 
+    #             length=self.sequence_length + 1, 
+    #             device=self.device
+    #         )
+            
+    #         # 3. Yield samples one by one
+    #         # The DataLoader will regroup these into your training 'batch_size' (e.g., 128)
+    #         # Since tensors are already on GPU/Memory, this is fast.
+    #         for i in range(current_chunk_size):
+    #             seq = batch_data[i]
+    #             # Input: 0 to N-1
+    #             # Target: 1 to N
+    #             yield (seq[:-1], seq[1:])
+                
+    #         samples_yielded += current_chunk_size
 
 
 def process_dataset_collate_fn(
@@ -61,3 +86,6 @@ def process_dataset_collate_fn(
     data = [x[0] for x in batch]
     labels = [x[1] for x in batch]
     return torch.tensor(data, dtype=torch.long), torch.tensor(labels, dtype=torch.long)
+# def process_dataset_collate_fn(batch):
+#     inputs,targets=zip(*batch)
+#     return torch.stack(inputs),torch.stack(targets)
