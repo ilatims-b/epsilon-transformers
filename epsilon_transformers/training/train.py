@@ -230,71 +230,6 @@ def _compute_validation_metrics(
     print(f"[eval] total eval time: {time.time()-t_start_eval:.3f}s")
     return log                    
 
-
-
-    
-    # Compute KL metrics if analyzers available
-    # if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits) > 0:
-    #     all_logits_tensor = torch.cat(all_logits, dim=0)
-    #     all_sequences_tensor = torch.cat(all_sequences, dim=0)
-    #     ngram_analyzer.build_from_sequences(all_sequences_tensor)
-    #     print(f"[KL Analysis] N-gram analyzer (rebuilt) on current eval dataset")
-    #     if device.type == 'cuda' :
-    #         try:
-    #             import cupy as cp
-    #             print("[TIMING] Starting CuPy conversion")
-    #             torch.cuda.synchronize()
-    #             t0 = time.time()
-    #             backend_logits = torch_to_cupy(all_logits_tensor)
-    #             torch.cuda.synchronize()
-    #             t1 = time.time()
-    #             print(f"[TIMING] CuPy conversion took {t1 - t0:.3f} seconds for backend_logits")
-    #             torch.cuda.synchronize()
-    #             t0 = time.time()
-    #             backend_sequences = torch_to_cupy(all_sequences_tensor)
-    #             torch.cuda.synchronize()
-    #             t1 = time.time()
-    #             print(f"[TIMING] CuPy conversion took {t1 - t0:.3f} seconds for backend_sequences")
-    #             print(f"[KL Analysis] Data moved to CuPy for KL computations")
-    #         except Exception as e:
-    #             print(f"[KL Analysis] Failed to move data to CuPy: {e}. Using numpy on CPU.")
-    #             backend_logits = all_logits_tensor.cpu().numpy()
-    #             backend_sequences = all_sequences_tensor.cpu().numpy()  
-
-    #     else:
-    #         backend_logits = all_logits_tensor.cpu().numpy()
-    #         backend_sequences = all_sequences_tensor.cpu().numpy()
-                      
-        
-    #     # N-gram KL divergences
-    #     if ngram_analyzer is not None:
-    #         ngram_metrics = compute_ngram_kl_divergence(
-    #             backend_logits,
-    #             backend_sequences,
-    #             ngram_analyzer,
-    #             n_values=ngram_analyzer.n_grams,
-    #             return_per_position=return_per_position,
-    #         )
-            
-    #         for metric_name, metric_value in ngram_metrics.items():
-    #             log.update_metrics("test", metric_name=metric_name, loss=metric_value)
-        
-    #     # Markov KL divergence
-    #     if markov_analyzer is not None and val_process is not None:
-    #         markov_metrics = compute_markov_kl_divergence(
-    #             backend_logits,
-    #             backend_sequences,
-    #             process=val_process,
-    #             analyzer=markov_analyzer,
-    #             return_per_position=return_per_position,
-    #         )
-            
-    #         for metric_name, metric_value in markov_metrics.items():
-    #             log.update_metrics("test", metric_name=metric_name, loss=metric_value)
-    
-    # return log
-
-
 def _evaluate_log_and_persist(
     persister,
     model,
@@ -328,13 +263,6 @@ def _evaluate_log_and_persist(
     
     if verbose:
         print(f"[Step {tokens_trained}] Training loss: {log.train_loss:.6f}") 
-
-    # metadata = {
-    #     "train_loss": log.train_loss,
-    #     "test_loss": log.test_loss,
-    # }
-    # persister.save_model(model, tokens_trained, metadata=metadata) 
-    #print(f"[Step {tokens_trained}] Metrics: {log.metrics}")
 
     if "train" in log.metrics and log.metrics["train"]:
         persister.save_metrics_to_csv("train", log.metrics["train"], tokens_trained)
@@ -381,46 +309,6 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         config=config,
         vocab_size=model.cfg.d_vocab)
     last_action_batch_tokens=0#for ngram analyzer
-
-    # BUILD N-GRAM ANALYZER ON TRAIN DATA
-    # if ngram_analyzer is not None:
-    #     print(f"[Training] Building N-Gram Analyzer statistics from training data...")
-    #     t_ngram_build_start=time.time()
-    #     # 1. Collect all training data into one tensor
-    #     all_train_sequences = []
-    #     for input_data, _ in tqdm(train_dataloader, desc="Collecting Train Data"):
-    #         all_train_sequences.append(input_data)
-        
-    #     # shape[Total_Train_Samples, Seq_Len]
-    #     full_train_tensor = torch.cat(all_train_sequences, dim=0)
-        
-    #     #Move to GPU for fast build (if it fits)
-    #     #If OOM, move to 'cpu' instead.
-    #     build_device = device
-    #     try:
-    #         full_train_tensor = full_train_tensor.to(build_device)
-    #         ngram_analyzer.build_from_sequences(full_train_tensor)
-    #         persister.save_ngram_data(ngram_analyzer, tokens_trained=(full_train_tensor.shape[0]*full_train_tensor.shape[1]))
-    #     except RuntimeError as e:
-    #         if "out of memory" in str(e):
-    #             print("[Warning] OOM during N-Gram build on GPU. Falling back to CPU.")
-    #             torch.cuda.empty_cache()
-    #             ngram_analyzer.build_from_sequences(full_train_tensor.to('cpu'))
-    #             # Move tables back to GPU for eval later
-    #             for n in ngram_analyzer.prob_tables:
-    #                 ngram_analyzer.prob_tables[n] = ngram_analyzer.prob_tables[n].to(device)
-    #                 ngram_analyzer.device = device
-    #         else:
-    #             raise e
-    #     del full_train_tensor
-    #     del all_train_sequences
-    #     if device.type == 'cuda':
-    #         torch.cuda.empty_cache()
-    #     print(f"[Training] N-Gram build time: {time.time()-t_ngram_build_start:.3f}s")
-    #     _set_random_seed(config.seed)
-    #     train_dataloader=config.dataset.to_dataloader(
-    #         sequence_length=model.cfg.n_ctx, train=True
-    #     )
 
     model.train()
     tokens_trained_so_far = 0
