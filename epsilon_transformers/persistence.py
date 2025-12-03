@@ -232,7 +232,7 @@ class Persister:
                 print("[Persister] No saved N-Gram counts found for this tokens_trained.")
                 return None
         try:
-            data=toch.load(filename,map_location=device) 
+            data=torch.load(filename,map_location=device) 
             return data
         except Exception as e:
             print(f"[persister]failed to load ngram counts:{e}")   

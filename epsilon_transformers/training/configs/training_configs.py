@@ -63,6 +63,7 @@ class ProcessDatasetConfig(Config):
     sequence_length: int
     num_tokens: int
     test_split: float
+    test_batch_size: Optional[int]=None
 
     @field_validator("batch_size")
     @classmethod
@@ -89,10 +90,14 @@ class ProcessDatasetConfig(Config):
             
             num_samples=num_samples,
         )
+        if train:
+            current_batch_size=self.batch_size
+        else:
+            current_batch_size=self.test_batch_size if self.test_batch_size is not None else self.batch_size    
         return DataLoader(
             dataset=dataset,
             collate_fn=process_dataset_collate_fn,
-            batch_size=self.batch_size,
+            batch_size=current_batch_size,
         )
 
 

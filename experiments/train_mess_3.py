@@ -1,3 +1,8 @@
+#one training batch of size 128, seq len 10 takes 0.01 s on average
+
+
+
+
 from transformers.models import FalconForSequenceClassification
 from epsilon_transformers.training.configs.model_configs import RawModelConfig
 from epsilon_transformers.training.configs.training_configs import (
@@ -49,7 +54,8 @@ dataset_config = ProcessDatasetConfig(
     batch_size=128,
     num_tokens=150000,
     sequence_length=10,
-    test_split=0.0625
+    test_split=0.0625,
+    test_batch_size=512,
 )
 
 
@@ -89,7 +95,7 @@ kl_analysis_config = KLAnalysisConfig(
     ngram_analysis=NGramAnalysisConfig(
         enabled=True,
         n_values=[1, 2, 3],
-        return_per_position=True,
+        return_per_position=False,
     ),
     markov_kl_analysis=MarkovKLAnalysisConfig(
         enabled=True,

@@ -104,7 +104,7 @@ def _compute_myopic_entropy(val_process:object, n_ctx: int, device: torch.device
     #block_entropy = mixed_state_tree.block_entropy
     myopic_entropy_rate = mixed_state_tree.myopic_entropy
     minimum_cross_entropy = myopic_entropy_rate 
-    print(minimum_cross_entropy)
+    print(f"myopic entropy rates:{minimum_cross_entropy}")
     return torch.tensor(minimum_cross_entropy, dtype=torch.float32, device=device)
 
 def _compute_relative_losses(loss_tensor: torch.Tensor, minimum_cross_entropy: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -385,7 +385,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         vocab_size=model.cfg.d_vocab)
     last_action_batch_tokens=0#for ngram analyzer
 
-    # --- BUILD N-GRAM ANALYZER ON TRAIN DATA ---
+    # BUILD N-GRAM ANALYZER ON TRAIN DATA
     # if ngram_analyzer is not None:
     #     print(f"[Training] Building N-Gram Analyzer statistics from training data...")
     #     t_ngram_build_start=time.time()
@@ -394,11 +394,11 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     #     for input_data, _ in tqdm(train_dataloader, desc="Collecting Train Data"):
     #         all_train_sequences.append(input_data)
         
-    #     # Shape: [Total_Train_Samples, Seq_Len]
+    #     # shape[Total_Train_Samples, Seq_Len]
     #     full_train_tensor = torch.cat(all_train_sequences, dim=0)
         
-    #     # 2. Move to GPU for fast build (if it fits)
-    #     # Note: If OOM on P100, move to 'cpu' instead.
+    #     #Move to GPU for fast build (if it fits)
+    #     #If OOM, move to 'cpu' instead.
     #     build_device = device
     #     try:
     #         full_train_tensor = full_train_tensor.to(build_device)
@@ -415,8 +415,6 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     #                 ngram_analyzer.device = device
     #         else:
     #             raise e
-        
-    #     # Free memory
     #     del full_train_tensor
     #     del all_train_sequences
     #     if device.type == 'cuda':
@@ -430,9 +428,6 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     model.train()
     tokens_trained_so_far = 0
     train_sequences_since_last_action=[]
-
-    # running_train_loss=0.0
-    # running_batch_count= 0
     
     # Training loop
     for batch_idx, (input_data, target_data) in enumerate(
@@ -440,7 +435,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     ):
         t0 = time.time()
         input_data = input_data.to(device)
-        print(input_data[0].shape)
+        print(input_data.size(0))
         target_data = target_data.to(device)
         if ngram_analyzer is not None:
             train_sequences_since_last_action.append(input_data)

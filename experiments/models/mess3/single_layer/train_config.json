@@ -22,7 +22,8 @@
     "batch_size": 128,
     "sequence_length": 10,
     "num_tokens": 150000,
-    "test_split": 0.0625
+    "test_split": 0.0625,
+    "test_batch_size": 512
   },
   "persistance": {
     "location": "local",
@@ -48,7 +49,7 @@
         2,
         3
       ],
-      "return_per_position": true
+      "return_per_position": false
     },
     "markov_kl_analysis": {
       "enabled": true,
