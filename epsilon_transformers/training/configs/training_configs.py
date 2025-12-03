@@ -93,7 +93,8 @@ class ProcessDatasetConfig(Config):
         if train:
             current_batch_size=self.batch_size
         else:
-            current_batch_size=self.test_batch_size if self.test_batch_size is not None else self.batch_size    
+            current_batch_size=self.test_batch_size if self.test_batch_size is not None else self.batch_size 
+        print(f"[Info] Created {'train' if train else 'test'} dataloader with {num_samples} samples, sequence_length={seq_len}, batch_size={current_batch_size}")       
         return DataLoader(
             dataset=dataset,
             collate_fn=process_dataset_collate_fn,

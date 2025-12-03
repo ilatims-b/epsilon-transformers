@@ -184,9 +184,6 @@ def _compute_validation_metrics(
             for i, rel_val in enumerate(avg_relative_loss_per_pos):
                 log.update_metrics("test", metric_name=f"relative_loss_{i}", loss=rel_val.item())
 
-            #for kl
-            all_logits.append(logits)
-            all_sequences.append(input_data)
     
     avg_loss = total_loss / max(num_batches, 1)
     log.update_metrics("test", loss=avg_loss)
@@ -435,7 +432,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     ):
         t0 = time.time()
         input_data = input_data.to(device)
-        print(input_data.size(0))
+        # print(input_data.size(0))
         target_data = target_data.to(device)
         if ngram_analyzer is not None:
             train_sequences_since_last_action.append(input_data)
