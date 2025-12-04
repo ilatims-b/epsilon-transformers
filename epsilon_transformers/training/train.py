@@ -293,7 +293,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     model.train()
     tokens_trained_so_far = 0
     train_sequences_since_last_action=[]
-    
+    log_train_loss_every_n_batches=10
     # Training loop
     for batch_idx, (input_data, target_data) in enumerate(
         tqdm(train_dataloader, desc="Train Loop")
@@ -315,6 +315,9 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         optimizer.zero_grad()
         mean_loss.backward()
         optimizer.step()
+        if (batch_idx + 1) % log_every_n_batches == 0:
+            log.persist() # Sends accumulated training metrics to WandB
+            log.reset()   # Clears the accumulator for the next interval
         t1 = time.time()
         print(f"[TIMING] Train batch took {t1 - t0:.3f} seconds")
 
