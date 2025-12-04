@@ -293,7 +293,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     model.train()
     tokens_trained_so_far = 0
     train_sequences_since_last_action=[]
-    log_train_loss_every_n_batches=10
+
     # Training loop
     for batch_idx, (input_data, target_data) in enumerate(
         tqdm(train_dataloader, desc="Train Loop")
@@ -315,9 +315,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         optimizer.zero_grad()
         mean_loss.backward()
         optimizer.step()
-        if (batch_idx + 1) % log_train_loss_every_n_batches == 0:
-            log.persist() # Sends accumulated training metrics to WandB
-            log.reset()   # Clears the accumulator for the next interval
+        
         t1 = time.time()
         print(f"[TIMING] Train batch took {t1 - t0:.3f} seconds")
 
@@ -420,156 +418,3 @@ def _main(config_path: pathlib.Path):
 if __name__ == "__main__":
     fire.Fire(_main)
 
-
-# import re
-# from epsilon_transformers.process.datasets import ProcessDataset
-
-# def finetune(
-#     checkpoint_path: str,
-#     config_path:str,
-#     seed: int,
-#     wandb_run_id: Optional[str]=None
-# ):
-#     """
-#         Finetune a model from a checkpoint.
-        
-#         Args:
-#             checkpoint_path: Path to the .pt checkpoint file
-#             config_path: Path to the config.yaml or train_config.json
-#             seed: Random seed for the training dataloader (must match original run for correct resumption)
-#             wandb_run_id: Optional WandB run ID to resume logging to the same run
-#         """
-#     checkpoint_path = pathlib.Path(checkpoint_path)
-#     match=re.search(r'tokens_(\d+)',checkpoint_path.name)
-#     if not match:
-#         raise ValueError(f"could not parse tokens trained from chkpt name: {checkpoint_path.name}")
-    
-#     tokens_trained_start=int(match.group(1))
-
-#     if str(config_path).endswith('.yaml') or str(config_path).endswith('.yml'):
-#         config=TrainConfig.from_yaml(config_path)
-#     else:
-#         import json
-#         with open(config_path, 'r') as f:
-#             config_dict=json.load(f)
-#             config=TrainConfig(**config_dict)
-#         device=torch.device("mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
-#         print(f"[Finetune] Using device: {device}")
-#         print(f"[finetune] resuming from {tokens_trained_start} tokens trained")
-
-#     if wandb_run_id:
-#         print("[finetune] resuming wandb run id:", wandb_run_id)
-#         dotenv.load_dotenv()
-#         wandb.login(key=config.logging.wandb_api_key or os.environ.get("WANDB_API_KEY"))     
-
-#         wandb.init(
-#             project=config.logging.project_name,
-#             id=wandb_run_id,
-#             resume="must",
-#             config=config.model_dump()
-
-#         )     
-#         log=Log(
-#             config=config.logging,
-#             train_loss=0.0,
-#             test_loss=0.0
-
-#         )
-#     else:
-#         print("[finetune] starting new wandb run")  
-#         log = config.init_logger()
-#     persister=Persister(save_dir=config.persistance.collection_location)
-#     print(f"[finetune] loading model from {checkpoint_path}")
-#     model=persister.load_model(checkpoint_path,device=device)
-#     model.train()
-#     optimizer=config.optimizer.from_model(model=model, device=device)
-#     print(f"[finetune] creating dataloaders")
-#     _set_random_seed(seed)
-#     train_dataloader = config.dataset.to_dataloader(
-#         sequence_length=model.cfg.n_ctx, train=True
-#     )
-#     seq_len=config.dataset.sequence_length
-#     samples_processed = tokens_trained_start // seq_len
-#     emissions_to_burn = samples_processed * (seq_len + 1)
-    
-#     dataset = train_dataloader.dataset
-#     if isinstance(dataset, ProcessDataset):
-#         print(f"[Finetune] Fast-forwarding generator by {emissions_to_burn} emissions (this may take a moment)...")
-#         # Consume the iterator efficiently
-#         for _ in tqdm(range(emissions_to_burn), desc="Burning dataset history"):
-#             next(dataset.samples)
-#     else:
-#         print("[Warning] Dataset is not ProcessDataset. Deterministic resumption cannot be guaranteed.")
-
-#     # 5. Setup Analyzers
-#     val_process = get_process_object(config.dataset.process, config.dataset.process_params)
-#     minimum_cross_entropy = _compute_myopic_entropy(val_process, model.cfg.n_ctx, device)
-#     ngram_analyzer, markov_analyzer = _setup_kl_analyzers(config=config, vocab_size=model.cfg.d_vocab)
-
-#     if ngram_analyzer:
-#         print("[Finetune] Note: N-Gram statistics are empty. Rebuild from full history if strictly needed.")
-
-#     # 6. Training Loop
-#     print("[Finetune] Starting training loop...")
-#     tokens_per_batch = config.dataset.batch_size * seq_len
-#     start_batch_idx = tokens_trained_start // tokens_per_batch
-
-#     # Iterate through the now fast-forwarded dataloader
-#     for i, (input_data, target_data) in enumerate(tqdm(train_dataloader, desc="Finetune")):
-#         batch_idx = start_batch_idx + i
-        
-#         t0 = time.time()
-#         input_data = input_data.to(device)
-#         target_data = target_data.to(device)
-
-#         # Forward
-#         logits = model(input_data, return_type="logits")
-#         criterion = nn.CrossEntropyLoss(reduction="none")
-#         loss = criterion(logits.view(-1, logits.size(-1)), target_data.view(-1))
-#         loss = loss.view(input_data.size(0), input_data.size(1))
-        
-#         # Loss Calculation
-#         mean_loss, relative_loss = _compute_relative_losses(loss, minimum_cross_entropy)
-#         mean_loss = mean_loss / input_data.size(0) # Normalize by batch size if needed by optimizer
-        
-#         # Log
-#         log.update_metrics(train_or_test="train", loss=mean_loss.item())
-        
-#         # Backward
-#         optimizer.zero_grad()
-#         mean_loss.backward()
-#         optimizer.step()
-        
-#         # Calculate Tokens Trained
-#         tokens_trained_so_far = _calculate_tokens_trained(
-#             batch_size=config.dataset.batch_size,
-#             sequence_len=model.cfg.n_ctx,
-#             batch_idx=batch_idx
-#         )
-
-#         # Checkpoint & Eval
-#         if _check_if_action_batch(
-#             perform_action_every_n_tokens=config.persistance.checkpoint_every_n_tokens,
-#             batch_size=config.dataset.batch_size,
-#             batch_idx=batch_idx,
-#             sequence_len=model.cfg.n_ctx,
-#         ):
-#             model.eval()
-#             _evaluate_log_and_persist(
-#                 persister=persister,
-#                 model=model,
-#                 log=log,
-#                 verbose=config.verbose,
-#                 device=device,
-#                 dataset_config=config.dataset,
-#                 tokens_trained=tokens_trained_so_far,
-#                 ngram_analyzer=ngram_analyzer,
-#                 markov_analyzer=markov_analyzer,
-#                 val_process=val_process,
-#                 minimum_cross_entropy=minimum_cross_entropy
-#             )
-#             model.train()
-
-#     # Final Save
-#     config.logging.close()
-#     return model, log  
