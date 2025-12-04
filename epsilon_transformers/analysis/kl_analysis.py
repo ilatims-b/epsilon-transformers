@@ -44,18 +44,25 @@ class MarkovKLAnalyzer:
         
         current_states = vec.unsqueeze(0).expand(batch_size, -1)
         
-        kl_per_position = torch.zeros(seq_len - 1, device=device)
+        kl_per_position = torch.zeros(seq_len, device=device)
         kl_all_values_list = []
 
         T_emit_marginal = T_emit.sum(dim=2).t() 
 
-        for pos in range(1, seq_len):
-            # P(e) = P(s) * P(e|s)
-            # [B, S] @ [S, V] -> [B, V]
-            emission_probs = torch.matmul(current_states, T_emit_marginal)
+        for pos in range(seq_len):
+            emissions=sequences[:,pos]
+            T_selected=T_next[emissions]
+            next_states=torch.einsum("bs, bsd -> bd", current_states, T_selected)
+            next_states=next_states/(next_states.sum(dim=1,keepdim=True))
+            current_states=next_states
+            gt_dist=torch.matmul(current_states,T_emit_marginal)
+            gt_dist=gt_dist/(gt_dist.sum(dim=1,keepdim=True))
+            # # P(e) = P(s) * P(e|s)
+            # # [B, S] @ [S, V] -> [B, V]
+            # emission_probs = torch.matmul(current_states, T_emit_marginal)
             
-            emission_probs = emission_probs / (emission_probs.sum(dim=1, keepdim=True))
-            gt_dist = emission_probs 
+            # emission_probs = emission_probs / (emission_probs.sum(dim=1, keepdim=True))
+            # gt_dist = emission_probs 
 
             #Model Probs
             logit_batch = model_logits[:, pos, :]
@@ -65,21 +72,21 @@ class MarkovKLAnalyzer:
             gt_log_probs = torch.log(gt_dist)
             kl_batch = torch.sum(gt_dist * (gt_log_probs - model_log_probs), dim=-1)
             
-            kl_per_position[pos-1] = kl_batch.mean()
+            kl_per_position[pos] = kl_batch.mean()
             kl_all_values_list.append(kl_batch)
 
             # Use T_next (which might be norm_transition_matrix)
-            emissions = sequences[:, pos-1] # [B]
+            # emissions = sequences[:, pos-1] # [B]
             
-            # Select matrices for observed emissions: [B, S, D]
-            T_selected = T_next[emissions]
+            # # Select matrices for observed emissions: [B, S, D]
+            # T_selected = T_next[emissions]
             
-            # Next state = Current State * Transition
-            next_states = torch.einsum("bs, bsd -> bd", current_states, T_selected)
+            # # Next state = Current State * Transition
+            # next_states = torch.einsum("bs, bsd -> bd", current_states, T_selected)
             
-            # Normalize (if it is linear mess3, you are just normalizing by 1)
-            next_states = next_states / (next_states.sum(dim=1, keepdim=True))
-            current_states = next_states
+            # # Normalize (if it is linear mess3, you are just normalizing by 1)
+            # next_states = next_states / (next_states.sum(dim=1, keepdim=True))
+            # current_states = next_states
         
         if len(kl_all_values_list) > 0:
             kl_all_values = torch.cat(kl_all_values_list, dim=0)

@@ -84,12 +84,38 @@ class Persister:
             return json.load(f)
 
     def get_model_checkpoints(self) -> List[pathlib.Path]:
-        files=list(self.save_dir.glob("checkpoint_*_tokens_*.pt")) 
-        print(f"[Persister] Found {len(files)} checkpoints in {self.save_dir}")
-        def parse_tokens(path:pathlib.Path)->int:
-            match=re.search(r"tokens_(\d+)", path.name)
-            return int(match.group(1)) if match else -1
-        return sorted(files, key=parse_tokens)      
+        """
+        Retrieve sorted list of model checkpoints.
+        Supports both formats:
+        1. checkpoint_X_tokens_Y.pt
+        2. Y.pt (e.g. 6400.pt)
+        """
+        all_files = list(self.save_dir.glob("*.pt"))
+        valid_checkpoints = []
+
+        def parse_tokens(path: pathlib.Path) -> int:
+            # Format 1: Pure number "6400.pt"
+            short_match = re.match(r"^(\d+)\.pt$", path.name)
+            if short_match:
+                return int(short_match.group(1))
+            
+            # Format 2: "checkpoint_X_tokens_6400.pt"
+            long_match = re.search(r"tokens_(\d+)", path.name)
+            if long_match:
+                return int(long_match.group(1))
+            
+            return -1
+
+        for p in all_files:
+            # Filter out auxiliary files like ngram counts or configs
+            if "ngram_counts" in p.name or "train_config" in p.name:
+                continue
+            
+            if parse_tokens(p) != -1:
+                valid_checkpoints.append(p)
+
+        print(f"[Persister] Found {len(valid_checkpoints)} checkpoints in {self.save_dir}")
+        return sorted(valid_checkpoints, key=parse_tokens)      
 
     def load_model(self, checkpoint_path: pathlib.Path|str, device: str='cpu') -> Any:
         """
