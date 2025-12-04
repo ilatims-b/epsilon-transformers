@@ -158,7 +158,7 @@ def _compute_validation_metrics(
             # Collect for KL analysis
             all_logits.append(logits)
             all_sequences.append(input_data)
-
+            num_batches += 1
             t1 = time.time()
             t_model_fwd += (t1 - t0)
         print(f"[eval] model forward time: {t_model_fwd:.3f} seconds over {num_batches} batches")    
