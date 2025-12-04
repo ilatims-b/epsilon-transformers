@@ -311,7 +311,15 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         mean_loss, _ = _compute_relative_losses(loss_per_token, minimum_cross_entropy)
 
         log.update_metrics(train_or_test="train", loss=mean_loss.item(),metric_name="loss")
-
+        if (batch_idx + 1) % 10 == 0:
+            wandb.log({
+                "train/step_loss": mean_loss.item(),
+                "tokens_trained": _calculate_tokens_trained(
+                    config.dataset.batch_size, 
+                    model.cfg.n_ctx, 
+                    batch_idx
+                )
+            })
         optimizer.zero_grad()
         mean_loss.backward()
         optimizer.step()
