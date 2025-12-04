@@ -315,7 +315,7 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
         optimizer.zero_grad()
         mean_loss.backward()
         optimizer.step()
-        if (batch_idx + 1) % log_every_n_batches == 0:
+        if (batch_idx + 1) % log_train_loss_every_n_batches == 0:
             log.persist() # Sends accumulated training metrics to WandB
             log.reset()   # Clears the accumulator for the next interval
         t1 = time.time()
