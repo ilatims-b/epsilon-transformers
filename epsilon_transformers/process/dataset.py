@@ -1,5 +1,5 @@
 import torch
-from typing import Iterator
+from typing import Iterator, Optional
 from jaxtyping import Float
 from torch.utils.data import IterableDataset
 
@@ -18,6 +18,11 @@ class ProcessDataset(IterableDataset):
     process_params: dict[str, float]
     sequence_length: int
     num_samples: int
+    device:torch.device
+    chunk_size: int
+    
+
+    samples:Optional[Iterator[int]]=None #for cpu fallback
 
     def __init__(
         self,
@@ -25,6 +30,8 @@ class ProcessDataset(IterableDataset):
         process_params: dict[str, float],
         sequence_length: int,
         num_samples: int,
+        device: Optional[torch.device] = None,
+        chunk_size: int = 2048,
     ):
         super().__init__()
 
@@ -35,6 +42,83 @@ class ProcessDataset(IterableDataset):
             )
         process: Process = process_class(**process_params)
 
+        self.samples = process.yield_emissions(
+            sequence_len=num_samples * (sequence_length + 1)
+        )
+        self.process: Process = process_class(**process_params)
+        self.sequence_length = sequence_length
+        self.num_samples = num_samples
+        self.chunk_size = chunk_size
+
+        if device is None:
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+            elif torch.backends.mps.is_available():
+                device = torch.device("mps")
+            else:
+                device = torch.device("cpu")
+        self.device = device        
+
+    def __len__(self):
+        return self.num_samples
+
+    # def __iter__(self) -> Iterator[tuple[list[int], list[int]]]:
+    #     for _ in range(self.num_samples):
+    #         process_history = [
+    #             next(self.samples) for _ in range(self.sequence_length + 1)
+    #         ]
+    #         yield (process_history[:-1], process_history[1:])
+    def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Iterate over samples, generating in GPU batches for efficiency.
+        
+        Yields:
+            Tuple of (input_sequence, target_sequence), each of shape (sequence_length,)
+        """
+        samples_yielded = 0
+        
+        while samples_yielded < self.num_samples:
+            # Calculate chunk size for this iteration
+            current_chunk_size = min(self.chunk_size, self.num_samples - samples_yielded)
+            
+            # Generate batch on GPU: (chunk_size, sequence_length + 1)
+            batch_data = self.process.generate_batch_gpu(
+                batch_size=current_chunk_size,
+                seq_len=self.sequence_length + 1,
+                device=self.device
+            )
+            
+            # Yield samples one by one
+            # The DataLoader will regroup these into training batch_size
+            for i in range(current_chunk_size):
+                seq = batch_data[i]
+                # Input: 0 to N-1, Target: 1 to N
+                yield (seq[:-1], seq[1:])
+            
+            samples_yielded += current_chunk_size
+
+class ProcessDatasetCPU(IterableDataset):
+    """
+    Legacy CPU-only dataset (for backward compatibility).
+    """
+    samples: Iterator[int]
+    sequence_length: int
+    num_samples: int
+
+    def __init__(
+        self,
+        process_name: str,
+        process_params: dict[str, float],
+        sequence_length: int,
+        num_samples: int,
+    ):
+        super().__init__()
+        process_class = PROCESS_REGISTRY.get(process_name, None)
+        if process_class is None:
+            raise ValueError(
+                f"{process_name} is not a recognized process. It must be one of the following {PROCESS_REGISTRY.keys()}"
+            )
+        process: Process = process_class(**process_params)
         self.samples = process.yield_emissions(
             sequence_len=num_samples * (sequence_length + 1)
         )
@@ -50,31 +134,7 @@ class ProcessDataset(IterableDataset):
                 next(self.samples) for _ in range(self.sequence_length + 1)
             ]
             yield (process_history[:-1], process_history[1:])
-    # def __iter__(self):
-    #     samples_yielded = 0
-        
-    #     while samples_yielded < self.num_samples:
-    #         # 1. Calculate chunk size
-    #         current_chunk_size = min(self.chunk_size, self.num_samples - samples_yielded)
-            
-    #         # 2. Generate a large batch on GPU [chunk_size, sequence_length + 1]
-    #         # We ask for sequence_length + 1 so we can split into (Input, Target)
-    #         batch_data = self.process.generate_batch(
-    #             batch_size=current_chunk_size, 
-    #             length=self.sequence_length + 1, 
-    #             device=self.device
-    #         )
-            
-    #         # 3. Yield samples one by one
-    #         # The DataLoader will regroup these into your training 'batch_size' (e.g., 128)
-    #         # Since tensors are already on GPU/Memory, this is fast.
-    #         for i in range(current_chunk_size):
-    #             seq = batch_data[i]
-    #             # Input: 0 to N-1
-    #             # Target: 1 to N
-    #             yield (seq[:-1], seq[1:])
-                
-    #         samples_yielded += current_chunk_size
+
 
 
 def process_dataset_collate_fn(
@@ -85,7 +145,8 @@ def process_dataset_collate_fn(
 ]:
     data = [x[0] for x in batch]
     labels = [x[1] for x in batch]
-    return torch.tensor(data, dtype=torch.long), torch.tensor(labels, dtype=torch.long)
-# def process_dataset_collate_fn(batch):
-#     inputs,targets=zip(*batch)
-#     return torch.stack(inputs),torch.stack(targets)
+    # Check if already tensors (GPU path) or lists (CPU path)
+    if isinstance(data[0], torch.Tensor):
+        return torch.stack(data), torch.stack(labels)
+    else:
+        return torch.tensor(data, dtype=torch.long), torch.tensor(labels, dtype=torch.long)

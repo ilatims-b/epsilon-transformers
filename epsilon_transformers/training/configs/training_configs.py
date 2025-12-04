@@ -64,6 +64,8 @@ class ProcessDatasetConfig(Config):
     num_tokens: int
     test_split: float
     test_batch_size: Optional[int]=None
+    gpu_generation:bool=True
+    chunk_size: int=2048
 
     @field_validator("batch_size")
     @classmethod
@@ -73,7 +75,7 @@ class ProcessDatasetConfig(Config):
             raise ValueError("batch_size must be > 0")
         return v
 
-    def to_dataloader(self, sequence_length: int, train: bool) -> DataLoader:
+    def to_dataloader(self, sequence_length: int, train: bool,device:Optional[torch.device]=None) -> DataLoader:
         """Create dataloader from config."""
         # Use sequence_length from config by default
         seq_len = sequence_length
@@ -82,19 +84,36 @@ class ProcessDatasetConfig(Config):
             if train
             else math.ceil(self.num_tokens * self.test_split)
             )
-        num_samples=total_tokens_target // seq_len    
+        num_samples=total_tokens_target // seq_len
+        if device is None:
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+            elif torch.backends.mps.is_available():
+                device = torch.device("mps")
+            else:
+                device = torch.device("cpu")
+
+        
+        if train:
+            current_batch_size=self.batch_size
+            current_chunk_size=self.chunk_size
+        else:
+            current_batch_size=self.test_batch_size if self.test_batch_size is not None else self.batch_size 
+            current_chunk_size=self.test_batch_size if self.test_batch_size is not None else self.chunk_size
         dataset = ProcessDataset(
             process_name=self.process,
             process_params=self.process_params,
             sequence_length=seq_len,
-            
+            device=device if self.gpu_generation else torch.device("cpu"),
+            chunk_size=self.chunk_size,
             num_samples=num_samples,
         )
-        if train:
-            current_batch_size=self.batch_size
-        else:
-            current_batch_size=self.test_batch_size if self.test_batch_size is not None else self.batch_size 
-        print(f"[Info] Created {'train' if train else 'test'} dataloader with {num_samples} samples, sequence_length={seq_len}, batch_size={current_batch_size}")       
+        print(f"[Info] Created {'train' if train else 'test'} dataloader with {num_samples} samples, "
+          f"sequence_length={seq_len}, batch_size={current_batch_size}, "
+          f"chunk_size={current_chunk_size}, "
+          f"device={device if self.gpu_generation else 'cpu'}")
+        
+        
         return DataLoader(
             dataset=dataset,
             collate_fn=process_dataset_collate_fn,

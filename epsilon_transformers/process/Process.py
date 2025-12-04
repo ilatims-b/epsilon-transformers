@@ -1,9 +1,10 @@
 import numpy as np
-from typing import Iterator
+from typing import Iterator, Optional
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from jaxtyping import Float
 from collections import deque
+import torch
 
 from epsilon_transformers.process.MixedStateTree import (
     MixedStateTree,
@@ -35,6 +36,10 @@ class Process(ABC):
     state_names_dict: dict[str, int]
     vocab_len: int
     num_states: int
+    # GPU tensors (lazily initialized)
+    _gpu_transition_matrix: Optional[torch.Tensor] = None
+    _gpu_steady_state: Optional[torch.Tensor] = None
+    _gpu_device: Optional[torch.device] = None
 
     @property
     def steady_state_vector(self) -> Float[np.ndarray, "num_states"]:
@@ -79,6 +84,10 @@ class Process(ABC):
 
         self.vocab_len = self.transition_matrix.shape[0]
         self.num_states = self.transition_matrix.shape[1]
+        # Reset GPU cache
+        self._gpu_transition_matrix = None
+        self._gpu_steady_state = None
+        self._gpu_device = None
 
     @abstractmethod
     def _create_hmm(
@@ -100,7 +109,69 @@ class Process(ABC):
             f"Vocabulary length: {self.vocab_len}\n"
             f"Transition matrix shape: {self.transition_matrix.shape}"
         )
+    def _ensure_gpu_tensors(self, device: torch.device):
+        """Lazily initialize GPU tensors for batch generation."""
+        if self._gpu_device != device or self._gpu_transition_matrix is None:
+            self._gpu_transition_matrix = torch.tensor(
+                self.transition_matrix, dtype=torch.float32, device=device
+            )
+            self._gpu_steady_state = torch.tensor(
+                self.steady_state_vector, dtype=torch.float32, device=device
+            )
+            self._gpu_device = device
 
+    def generate_batch_gpu(
+        self,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """
+        Generate a batch of sequences on GPU in parallel.
+        
+        Args:
+            batch_size: Number of sequences to generate
+            seq_len: Length of each sequence
+            device: torch device (cuda, mps, or cpu)
+            
+        Returns:
+            torch.Tensor of shape (batch_size, seq_len) with emissions (dtype=long)
+        """
+        self._ensure_gpu_tensors(device)
+        
+        T = self._gpu_transition_matrix  # (vocab_len, num_states, num_states)
+        steady_state = self._gpu_steady_state  # (num_states,)
+        
+        # Sample initial states for all sequences: (batch_size,)
+        current_states = torch.multinomial(
+            steady_state.unsqueeze(0).expand(batch_size, -1), 
+            num_samples=1
+        ).squeeze(-1)  # (batch_size,)
+        
+        emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        
+        for t in range(seq_len):
+            # Get transition probs for current states: (batch_size, vocab_len, num_states)
+            # T is (vocab_len, num_states, num_states)
+            # We need T[:, current_states[i], :] for each i
+            trans_probs = T[:, current_states, :]  # (vocab_len, batch_size, num_states)
+            trans_probs = trans_probs.permute(1, 0, 2)  # (batch_size, vocab_len, num_states)
+            
+            # Flatten to (batch_size, vocab_len * num_states)
+            flat_probs = trans_probs.reshape(batch_size, -1)
+            
+            # Sample emission and next state jointly
+            joint_idx = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)  # (batch_size,)
+            
+            # Decode emission and next state
+            emission = joint_idx // self.num_states
+            next_state = joint_idx % self.num_states
+            
+            emissions[:, t] = emission
+            current_states = next_state
+        
+        return emissions
+       
     def _sample_emission(self, current_state_idx: int | None = None) -> int:
         if current_state_idx is None:
             current_state_idx = np.random.choice(
@@ -250,6 +321,8 @@ def _compute_next_distribution(
 
 
 class NormTransitionMixin:
+    # GPU tensors for the norm matrix
+    _gpu_norm_transition_matrix: Optional[torch.Tensor] = None
     def __init__(self):
         # Call Process.__init__()
         super().__init__()
@@ -272,7 +345,8 @@ class NormTransitionMixin:
         transition = self.norm_transition_matrix.sum(axis=0)
         # if not np.allclose(transition.sum(axis=1), 1.0):
         #     raise ValueError("Transition matrix should be stochastic and sum to 1")
-
+        # Reset GPU cache for norm matrix
+        self._gpu_norm_transition_matrix = None
         
 
     @abstractmethod
@@ -287,7 +361,67 @@ class NormTransitionMixin:
         dict: A dictionary mapping state names to indices.
         """
         ...
-
+    def _ensure_gpu_tensors(self, device: torch.device):
+        """Override to also initialize norm transition matrix on GPU."""
+        # Call parent's _ensure_gpu_tensors
+        super()._ensure_gpu_tensors(device)
+        # Also initialize norm transition matrix
+        if self._gpu_norm_transition_matrix is None or self._gpu_device != device:
+            self._gpu_norm_transition_matrix = torch.tensor(
+                self.norm_transition_matrix, dtype=torch.float32, device=device
+            )
+    def generate_batch_gpu(
+        self,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """
+        Generate a batch of sequences on GPU for NormTransitionMixin processes.
+        
+        For these processes:
+        - Emission is sampled from transition_matrix (marginal over next states)
+        - Next state is sampled from norm_transition_matrix given the emission
+        """
+        self._ensure_gpu_tensors(device)
+        
+        T = self._gpu_transition_matrix  # (vocab_len, num_states, num_states)
+        T_norm = self._gpu_norm_transition_matrix  # (vocab_len, num_states, num_states)
+        steady_state = self._gpu_steady_state  # (num_states,)
+        
+        # Sample initial states for all sequences: (batch_size,)
+        current_states = torch.multinomial(
+            steady_state.unsqueeze(0).expand(batch_size, -1), 
+            num_samples=1
+        ).squeeze(-1)  # (batch_size,)
+        
+        emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        
+        for t in range(seq_len):
+            # Get transition probs for current states
+            # T[:, current_states, :] -> (vocab_len, batch_size, num_states)
+            trans_probs = T[:, current_states, :]  # (vocab_len, batch_size, num_states)
+            
+            # Marginalize over next states to get emission probs: (batch_size, vocab_len)
+            emission_probs = trans_probs.sum(dim=2).permute(1, 0)  # (batch_size, vocab_len)
+            
+            # Sample emissions
+            emission = torch.multinomial(emission_probs, num_samples=1).squeeze(-1)  # (batch_size,)
+            emissions[:, t] = emission
+            
+            # Now sample next state from norm_transition_matrix given emission
+            # T_norm[emission, current_states, :] -> need to gather properly
+            # For each sample i, we need T_norm[emission[i], current_states[i], :]
+            
+            # Efficient gather: (vocab_len, num_states, num_states) -> index by emission and current_states
+            # T_norm[emission] gives (batch_size, num_states, num_states)
+            next_state_probs = T_norm[emission, current_states, :]  # (batch_size, num_states)
+            
+            # Sample next states
+            next_state = torch.multinomial(next_state_probs, num_samples=1).squeeze(-1)  # (batch_size,)
+            current_states = next_state
+        
+        return emissions
 
     def _sample_emission_and_next_state(self, current_state_idx: int):
         """Override the Process version with the linear-process version."""
