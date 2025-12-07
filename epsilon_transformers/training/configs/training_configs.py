@@ -36,9 +36,11 @@ class OptimizerConfig(Config):
             optimizer = torch.optim.Adam
         elif self.optimizer_type == "sgd":
             optimizer = torch.optim.SGD
+        elif self.optimizer_type == "adamw":
+            optimizer = torch.optim.AdamW    
         else:
             raise ValueError(
-                f"{self.optimizer_type} is not a valid optimizer_type. Must be 'adam' or 'sgd'"
+                f"{self.optimizer_type} is not a valid optimizer_type. Must be 'adam' or 'sgd' or adamw"
             )
         return optimizer(
             model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
@@ -362,9 +364,31 @@ class TrainConfig(Config):
                 raise ValueError(
                     "To use wandb, provide wandb_api_key in config or set WANDB_API_KEY environment variable"
                 )
-
+            
             wandb.login(key=wandb_api_key)
-            wandb.init(project=self.logging.project_name, name=self.logging.run_name, config=self.model_dump())
+            
+            resume_id = os.environ.get("WANDB_RUN_ID")
+            resume_mode = os.environ.get("WANDB_RESUME", "allow")
+            
+            if resume_id:
+                print(f"Config detected resume request for Run ID: {resume_id}")
+                wandb.init(
+                    project=self.logging.project_name, 
+                    id=resume_id, 
+                    resume=resume_mode,
+                    # We pass the config here so W&B can log any NEW overrides we made
+                    config=self.model_dump() 
+                )
+            else:
+                # Standard fresh run
+                wandb.init(
+                    project=self.logging.project_name, 
+                    name=self.logging.run_name, 
+                    config=self.model_dump()
+                )
+
+            
+            # wandb.init(project=self.logging.project_name, name=self.logging.run_name, config=self.model_dump())
         
         if self.logging.local is not None:
             raise NotImplementedError()
