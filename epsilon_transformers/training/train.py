@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
+import os
 import dotenv
 from tqdm import tqdm
 from typing import Tuple, Optional
@@ -255,7 +256,7 @@ def _evaluate_log_and_persist(
 
 
 
-def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
+def train_model(config: TrainConfig, run_id: str = None, return_per_position: bool = True) -> Tuple:
     """Train transformer model with KL analysis metrics."""
     device = torch.device(
         "mps" if torch.backends.mps.is_available()
@@ -265,6 +266,11 @@ def train_model(config: TrainConfig, return_per_position: bool = True) -> Tuple:
     print(f"[Training] Using device: {device}")
     
     _set_random_seed(config.seed)
+
+    if run_id:
+        print(f"Setting up environment to RESUME run: {run_id}")
+        os.environ["WANDB_RUN_ID"] = run_id
+        os.environ["WANDB_RESUME"] = "must"
     
     # Initialize logger and persister(handles wandb setup)
     log = config.init_logger()
