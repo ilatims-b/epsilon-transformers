@@ -23,11 +23,11 @@ from epsilon_transformers.training.configs.model_configs import RawModelConfig
 # EXISTING CONFIGS (DO NOT MODIFY please)
 # ============================================================================
 
-Optimizer = torch.optim.Adam | torch.optim.SGD
+Optimizer = torch.optim.Adam | torch.optim.SGD | torch.optim.AdamW
 
 
 class OptimizerConfig(Config):
-    optimizer_type: Literal["sgd", "adam"]
+    optimizer_type: Literal["sgd", "adam","adamw"]
     learning_rate: float
     weight_decay: float
 
