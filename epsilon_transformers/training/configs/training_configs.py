@@ -313,6 +313,18 @@ class KLAnalysisConfig:
     markov_kl_analysis: MarkovKLAnalysisConfig = field(default_factory=MarkovKLAnalysisConfig)
 
 
+@dataclass
+class SimplexAnalysisConfig:
+    """configuration for simplex mse analyis during validation"""
+    enabled:bool=True
+    hook_point:str='blocks.0.hook_resid_post'
+    num_samples_for_probe: int=1000
+
+class AnalysisConfig(Config):
+    """Configuration for all analysis metrics."""
+    ngram_analysis: NGramAnalysisConfig = field(default_factory=NGramAnalysisConfig)
+    markov_kl_analysis: MarkovKLAnalysisConfig = field(default_factory=MarkovKLAnalysisConfig)
+    simplex_analysis: SimplexAnalysisConfig = field(default_factory=SimplexAnalysisConfig)    
 # ============================================================================
 # TrainConfig WITH KL Analysis
 # ============================================================================
@@ -326,8 +338,12 @@ class TrainConfig(Config):
     seed: int
     verbose: bool
     
-    # NEW: KL Analysis configuration
-    kl_analysis: KLAnalysisConfig = field(default_factory=KLAnalysisConfig)
+    
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+
+    @property
+    def kl_analysis(self):
+        return self.analysis
 
     @model_validator(mode="after")
     def validate_model(self):

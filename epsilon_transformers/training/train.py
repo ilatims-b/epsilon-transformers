@@ -13,7 +13,7 @@ from tqdm import tqdm
 from typing import Tuple, Optional
 from torch.utils.data import DataLoader
 from epsilon_transformers.process.MixedStateTree import MixedStateTree
-
+from epsilon_transformers.process.processes import Trun_Mess3
 from epsilon_transformers.persistence import Persister
 from epsilon_transformers.training.configs.training_configs import (
     TrainConfig,
@@ -22,11 +22,14 @@ from epsilon_transformers.training.configs.training_configs import (
 )
 from epsilon_transformers.analysis.kl_analysis import MarkovKLAnalyzer, compute_markov_kl_divergence
 from epsilon_transformers.analysis.ngram_analysis import NGramAnalyzer, compute_ngram_kl_divergence
-
+from epsilon_transformers.analysis.simplex_analysis import SimplexAnalyzer
 from epsilon_transformers.process import Process
 
 from epsilon_transformers.process.processes import PROCESS_REGISTRY
 
+
+from epsilon_transformers.visualization.plots import _project_to_simplex
+from epsilon_transformers.analysis.activation_analysis import get_beliefs_for_transformer_inputs
     
 def get_process_object(process_name: str, process_params: dict):
     """Return an instantiated Process object given name and parameters."""
@@ -69,25 +72,31 @@ def _check_if_action_batch(
 
 
 
-def _setup_kl_analyzers(
+def _setup_analyzers(
     config: TrainConfig,
-    vocab_size: int
-) -> Tuple[Optional[NGramAnalyzer], Optional[MarkovKLAnalyzer]]:
+    vocab_size: int,
+    device:torch.device
+) -> Tuple[Optional[NGramAnalyzer], Optional[MarkovKLAnalyzer], Optional[SimplexAnalyzer]]:
     """Initialize KL divergence analyzers if enabled."""
     ngram_analyzer = None
     markov_analyzer = None
+    simplex_analyzer = None
     
-    # Check config for KL analysis enabled
-    if not hasattr(config, 'kl_analysis'):
-        return None, None
-    if config.kl_analysis.ngram_analysis.enabled:
-        n_values = config.kl_analysis.ngram_analysis.n_values
-        ngram_analyzer = NGramAnalyzer(vocab_size=vocab_size, n_grams=n_values)
-    
-    if config.kl_analysis.markov_kl_analysis.enabled:
-        markov_analyzer = MarkovKLAnalyzer(vocab_size=vocab_size)
-    
-    return ngram_analyzer, markov_analyzer
+    analysis_cfg=getattr(config,'analysis',None)
+    if analysis_cfg is None and hasattr(config,'kl_analysis'):
+        analysis_cfg=config.kl_analysis
+
+    if analysis_cfg:
+        if analysis_cfg.ngram_analysis.enabled:
+            n_values = analysis_cfg.ngram_analysis.n_values
+            ngram_analyzer = NGramAnalyzer(vocab_size=vocab_size, n_grams=n_values) 
+        if analysis_cfg.markov_kl_analysis.enabled:
+            markov_analyzer = MarkovKLAnalyzer(vocab_size=vocab_size)
+        if hasattr(analysis_cfg,'simplex_analysis') and analysis_cfg.simplex_analysis.enabled: 
+            simplex_analyzer = SimplexAnalyzer(
+                hook=analysis_cfg.simplex_analysis.hook_point, device=device
+            )
+    return ngram_analyzer, markov_analyzer, simplex_analyzer 
 
 def _compute_myopic_entropy(val_process:object, n_ctx: int, device: torch.device) -> torch.Tensor:
     """Compute theoretical minimum (myopic) cross-entropy per position for given process."""
@@ -119,6 +128,7 @@ def _compute_validation_metrics(
     log: Log,
     ngram_analyzer: Optional[NGramAnalyzer] = None,
     markov_analyzer: Optional[MarkovKLAnalyzer] = None,
+    simplex_analyzer: Optional[SimplexAnalyzer] = None,
     val_process: Optional[object] = None,
     return_per_position: bool = True,
     minimum_cross_entropy: torch.Tensor=None
@@ -163,7 +173,16 @@ def _compute_validation_metrics(
             t1 = time.time()
             t_model_fwd += (t1 - t0)
         print(f"[eval] model forward time: {t_model_fwd:.3f} seconds over {num_batches} batches")    
-    
+    if simplex_analyzer is not None:
+        t_simplex_start=time.time()
+        print("hi")
+        try:
+            mse = simplex_analyzer.compute_simplex_mse(model)
+            log.update_metrics("test", metric_name="simplex_mse", loss=mse)
+            print(f"[eval] Simplex MSE: {mse:.6f} ({time.time() - t_simplex_start:.3f}s)")
+        except Exception as e:
+            print(f"[eval] Simplex Analysis Failed: {e}")
+
     if (ngram_analyzer is not None or markov_analyzer is not None) and len(all_logits)>0:
         t_concat_start=time.time()
         all_logits_tensor=torch.cat(all_logits,dim=0)
@@ -216,6 +235,7 @@ def _evaluate_log_and_persist(
     dataset_config: ProcessDatasetConfig,
     ngram_analyzer: Optional[NGramAnalyzer] = None,
     markov_analyzer: Optional[MarkovKLAnalyzer] = None,
+    simplex_analyzer: Optional[SimplexAnalyzer] = None,
     val_process: Optional[object] = None,
     return_per_position: bool = True,
     minimum_cross_entropy: torch.Tensor=None
@@ -232,6 +252,7 @@ def _evaluate_log_and_persist(
             log=log,
             ngram_analyzer=ngram_analyzer,
             markov_analyzer=markov_analyzer,
+            simplex_analyzer=simplex_analyzer,
             val_process=val_process,
             return_per_position=return_per_position,
             minimum_cross_entropy=minimum_cross_entropy
@@ -270,7 +291,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     if run_id:
         print(f"Setting up environment to RESUME run: {run_id}")
         os.environ["WANDB_RUN_ID"] = run_id
-        os.environ["WANDB_RESUME"] = "must"
+        os.environ["WANDB_RESUME"] = "must"  
     
     # Initialize logger and persister(handles wandb setup)
     log = config.init_logger()
@@ -291,9 +312,29 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     # Initialize KL analyzers
     val_process = get_process_object(config.dataset.process, config.dataset.process_params)
     minimum_cross_entropy = _compute_myopic_entropy(val_process, model.cfg.n_ctx, device)
-    ngram_analyzer, markov_analyzer = _setup_kl_analyzers(
+    ngram_analyzer, markov_analyzer, simplex_analyzer = _setup_analyzers(
         config=config,
-        vocab_size=model.cfg.d_vocab)
+        vocab_size=model.cfg.d_vocab,
+        device=device
+    )
+    num_samples=None
+    if hasattr(config.analysis, 'simplex_analysis'):
+        num_samples=config.analysis.simplex_analysis.num_samples_for_probe
+    if simplex_analyzer is not None:
+        simplex_analyzer.setup_from_tree(process=val_process,depth=model.cfg.n_ctx + 1,num_samples=num_samples)
+
+    # # for simplex mse analysis
+    # mixed_state_tree = val_process.derive_mixed_state_presentation(depth=model.cfg.n_ctx + 1)
+    # MSP_transition_matrix = mixed_state_tree.build_msp_transition_matrix()
+    # tree_paths, tree_beliefs = mixed_state_tree.paths_and_belief_states
+    # msp_beliefs = [tuple(round(b, 5) for b in belief) for belief in tree_beliefs]
+    # msp_belief_index = {b: i for i, b in enumerate(set(msp_beliefs))}
+    # ground_truth_simplex = _project_to_simplex(np.array(list(msp_belief_index.keys())))
+    # transformer_inputs=[x for x in tree_paths if len(x)==model.cfg.n_ctx]
+    # transformer_inputs_tensor=torch.tensor(transformer_inputs,device=device)
+    # transformer_input_beliefs, transformer_input_belief_indices = get_beliefs_for_transformer_inputs(transformer_inputs, msp_belief_index,tree_paths, tree_beliefs)
+
+
     last_action_batch_tokens=0#for ngram analyzer
 
     model.train()
@@ -380,6 +421,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
                 tokens_trained=tokens_trained_so_far,
                 ngram_analyzer=ngram_analyzer,
                 markov_analyzer=markov_analyzer,
+                simplex_analyzer=simplex_analyzer,
                 val_process=val_process,
                 return_per_position=return_per_position,
                 minimum_cross_entropy=minimum_cross_entropy)
@@ -412,6 +454,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         dataset_config=config.dataset,
         ngram_analyzer=ngram_analyzer,
         markov_analyzer=markov_analyzer,
+        simplex_analyzer=simplex_analyzer,
         val_process=val_process,
         return_per_position=return_per_position,
         minimum_cross_entropy=minimum_cross_entropy

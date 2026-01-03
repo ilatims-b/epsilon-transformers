@@ -13,7 +13,8 @@ from epsilon_transformers.training.configs.training_configs import (
     TrainConfig,
     NGramAnalysisConfig,
     MarkovKLAnalysisConfig,
-    KLAnalysisConfig,
+    SimplexAnalysisConfig,
+    AnalysisConfig,
 )
 from epsilon_transformers.training.train import train_model
 
@@ -49,7 +50,7 @@ optimizer_config = OptimizerConfig(
 # ============================================================================
 
 dataset_config = ProcessDatasetConfig(
-    process='Mess3',
+    process='Trun_Mess3',
     process_params={'x': 0.05, 'a': 0.85},
     batch_size=128,
     num_tokens=150000,
@@ -89,7 +90,18 @@ logging_config = LoggingConfig(
 # KL Analysis Configuration
 # ============================================================================
 
-kl_analysis_config = KLAnalysisConfig(
+# kl_analysis_config = KLAnalysisConfig(
+#     ngram_analysis=NGramAnalysisConfig(
+#         enabled=True,
+#         n_values=[1, 2, 3],
+#         return_per_position=False,
+#     ),
+#     markov_kl_analysis=MarkovKLAnalysisConfig(
+#         enabled=True,
+#         return_per_position=True,
+#     ),
+# )
+analysis_config = AnalysisConfig(
     ngram_analysis=NGramAnalysisConfig(
         enabled=True,
         n_values=[1, 2, 3],
@@ -99,8 +111,13 @@ kl_analysis_config = KLAnalysisConfig(
         enabled=True,
         return_per_position=True,
     ),
+    # NEW: Simplex Analysis Configuration
+    simplex_analysis=SimplexAnalysisConfig(
+        enabled=True,
+        hook_point="blocks.0.hook_resid_post", # Adjust layer index if n_layers changes
+        num_samples_for_probe=None
+    )
 )
-
 
 # ============================================================================
 # Complete Training Configuration
@@ -111,7 +128,7 @@ mock_config = TrainConfig(
     dataset=dataset_config,
     persistance=persistance_config,
     logging=logging_config,
-    kl_analysis=kl_analysis_config,
+    analysis=analysis_config,
     verbose=True,
     seed=42
 )
