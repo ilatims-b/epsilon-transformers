@@ -53,6 +53,7 @@ dataset_config = ProcessDatasetConfig(
     process='Trun_Mess3',
     process_params={'x': 0.05, 'a': 0.85},
     batch_size=128,
+    chunk_size=2048,
     num_tokens=150000,
     sequence_length=10,
     test_split=0.0625,

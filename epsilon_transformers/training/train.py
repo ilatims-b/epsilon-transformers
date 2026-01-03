@@ -175,7 +175,7 @@ def _compute_validation_metrics(
         print(f"[eval] model forward time: {t_model_fwd:.3f} seconds over {num_batches} batches")    
     if simplex_analyzer is not None:
         t_simplex_start=time.time()
-        print("hi")
+        # print("hi")
         try:
             mse = simplex_analyzer.compute_simplex_mse(model)
             log.update_metrics("test", metric_name="simplex_mse", loss=mse)
