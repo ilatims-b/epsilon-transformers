@@ -85,6 +85,35 @@ class NoisyRRXOR(Process):
             T_noisy[x] = (1 - self.epsilon) * T_base[x] + noise_term
             
         return T_noisy, state_names
+class Trun_Mess3(Process):
+    def __init__(self, x=0.15, a=0.6,r=1,t1=1,t2=2):
+        self.name = "trun_mess3"
+        self.x = x
+        self.a = a
+        self.r = r
+        self.t1 = t1
+        self.t2 = t2
+        super().__init__()
+
+    def _create_hmm(self):
+        T = np.zeros((3, 3, 3))
+        state_names = {"A": 0, "B": 1, "C": 2}
+        b = (1 - self.a) / 2
+        y = 1 - 2 * self.x
+
+        ay = self.a * y
+        bx = b * self.x
+        by = b * y
+        ax = self.a * self.x
+
+
+        T[0, :, :] = [[0, 0, 0], [ax, by, bx], [ax, bx, by]]
+        T[1, :, :] = [[by+ay, ax+bx, 2*bx], [bx, ay, bx], [bx, ax, by]]
+        T[2, :, :] = [[by, bx, ax], [bx, by, ax], [bx, bx, ay]]
+
+
+        return T,state_names   
+
 
 class Linear_Mess3(NormTransitionMixin,Process):
     def __init__(self, x=0.15, a=0.6):

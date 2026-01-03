@@ -69,7 +69,8 @@ class MarkovKLAnalyzer:
             model_log_probs = F.log_softmax(logit_batch, dim=-1)
             
             #KL 
-            gt_log_probs = torch.log(gt_dist)
+            gt_log_probs = torch.log(gt_dist + 1e-10)
+            #add epsilon to avoid log(0)
             kl_batch = torch.sum(gt_dist * (gt_log_probs - model_log_probs), dim=-1)
             
             kl_per_position[pos] = kl_batch.mean()
