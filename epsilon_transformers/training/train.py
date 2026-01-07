@@ -177,7 +177,7 @@ def _compute_validation_metrics(
         t_simplex_start=time.time()
         # print("hi")
         try:
-            mse = simplex_analyzer.compute_simplex_mse(model)
+            _,_,mse = simplex_analyzer.compute_simplex_mse(model)
             log.update_metrics("test", metric_name="simplex_mse", loss=mse)
             print(f"[eval] Simplex MSE: {mse:.6f} ({time.time() - t_simplex_start:.3f}s)")
         except Exception as e:
@@ -344,7 +344,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     if hasattr(config.analysis, 'simplex_analysis'):
         num_samples=config.analysis.simplex_analysis.num_samples_for_probe
     if simplex_analyzer is not None:
-        simplex_analyzer.setup_from_tree(process=val_process,depth=model.cfg.n_ctx + 1,num_samples=num_samples)
+        _,__=simplex_analyzer.setup_from_tree(process=val_process,depth=model.cfg.n_ctx + 1,num_samples=num_samples)
 
     # # for simplex mse analysis
     # mixed_state_tree = val_process.derive_mixed_state_presentation(depth=model.cfg.n_ctx + 1)

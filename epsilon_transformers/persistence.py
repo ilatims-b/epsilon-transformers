@@ -19,7 +19,7 @@ class Persister:
         Args:
             save_dir: Directory to save checkpoints
         """
-        sself.save_dir = pathlib.Path(save_dir)
+        self.save_dir = pathlib.Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         existing = self.get_model_checkpoints()
         self.checkpoint_count = len(existing)
