@@ -51,6 +51,69 @@ class RRXOR(Process):
 
         return T, state_names
 
+class NoisyRRXOR(Process):
+    def __init__(self, pR1=0.5, pR2=0.5, epsilon=0.02):
+        self.name = "noisy_rrxor"
+        self.pR1 = pR1
+        self.pR2 = pR2
+        self.epsilon = epsilon
+        super().__init__()
+
+    def _create_hmm(self):
+        # 1. Create the base RRXOR Transition Matrix (2, 5, 5)
+        # Using the logic from your RRXOR class
+        T_base = np.zeros((2, 5, 5))
+        state_names = {"S": 0, "0": 1, "1": 2, "T": 3, "F": 4}
+        
+        T_base[0, state_names["S"], state_names["0"]] = self.pR1
+        T_base[1, state_names["S"], state_names["1"]] = 1 - self.pR1
+        T_base[0, state_names["0"], state_names["F"]] = self.pR2
+        T_base[1, state_names["0"], state_names["T"]] = 1 - self.pR2
+        T_base[0, state_names["1"], state_names["T"]] = self.pR2
+        T_base[1, state_names["1"], state_names["F"]] = 1 - self.pR2
+        T_base[1, state_names["T"], state_names["S"]] = 1.0
+        T_base[0, state_names["F"], state_names["S"]] = 1.0
+
+        # 2. Apply the Noise Transformation
+        # Formula: T_new = (1 - epsilon) * T + (epsilon / (2 * |S|)) * Ones_Matrix
+        num_states = 5
+        noise_term = (self.epsilon / (2 * num_states)) * np.ones((5, 5))
+        
+        # Apply to each symbol's transition matrix T[x]
+        T_noisy = np.zeros_like(T_base)
+        for x in range(2):
+            T_noisy[x] = (1 - self.epsilon) * T_base[x] + noise_term
+            
+        return T_noisy, state_names
+class Trun_Mess3(Process):
+    def __init__(self, x=0.15, a=0.6,r=1,t1=1,t2=2):
+        self.name = "trun_mess3"
+        self.x = x
+        self.a = a
+        self.r = r
+        self.t1 = t1
+        self.t2 = t2
+        super().__init__()
+
+    def _create_hmm(self):
+        T = np.zeros((3, 3, 3))
+        state_names = {"A": 0, "B": 1, "C": 2}
+        b = (1 - self.a) / 2
+        y = 1 - 2 * self.x
+
+        ay = self.a * y
+        bx = b * self.x
+        by = b * y
+        ax = self.a * self.x
+
+
+        T[0, :, :] = [[0, 0, bx/2], [ax, by, bx], [ax, bx, by]]
+        T[1, :, :] = [[by+ay, ax+bx, 1.5*bx], [bx, ay, bx], [bx, ax, by]]
+        T[2, :, :] = [[by, bx, ax], [bx, by, ax], [bx, bx, ay]]
+
+
+        return T,state_names   
+
 
 class Linear_Mess3(NormTransitionMixin,Process):
     def __init__(self, x=0.15, a=0.6):

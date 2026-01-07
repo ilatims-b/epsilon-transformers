@@ -172,7 +172,7 @@ class Process(ABC):
         
         return emissions
        
-    def _sample_emission(self, current_state_idx: int | None = None) -> int:
+    def _sample_emission(self, current_state_idx: Optional[int] = None) -> int:
         if current_state_idx is None:
             current_state_idx = np.random.choice(
                 self.num_states, p=self.steady_state_vector
