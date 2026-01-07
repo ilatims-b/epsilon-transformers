@@ -209,6 +209,7 @@ def _compute_validation_metrics(
 def _evaluate_log_and_persist(
     persister,
     model,
+    optimizer,
     verbose: bool,
     log: Log,
     device: torch.device,
@@ -250,7 +251,14 @@ def _evaluate_log_and_persist(
         
     # 4. Persist to WandB and Save Checkpoint
     log.persist() # Logs averages to WandB
-    persister.save_model(model, tokens_trained, metadata=aggregated_metrics)
+    persister.save_model(
+    model,
+    tokens_trained,
+    metadata={
+        **aggregated_metrics,
+        "optimizer_state_dict": optimizer.state_dict(),
+    }
+)
 
     log.reset()
 
@@ -280,6 +288,22 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     # Initialize model and optimizer
     model = config.model.to_hooked_transformer(device=device, seed=config.seed)
     optimizer = config.optimizer.from_model(model=model, device=device)
+
+    tokens_trained_so_far = 0
+
+    if run_id:
+        checkpoint = persister.load_latest_checkpoint(device=device)
+        if checkpoint is not None:
+            print("[Resume] Restoring model & optimizer")
+
+            model.load_state_dict(checkpoint["model_state_dict"])
+
+            if checkpoint.get("optimizer_state_dict") is not None:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+            tokens_trained_so_far = checkpoint.get("tokens_trained", 0)
+            print(f"[Resume] Resumed from {tokens_trained_so_far} tokens")
+
     print(f"[Training] Creating dataloaders...")
     # Create data loaders
     train_dataloader = config.dataset.to_dataloader(
@@ -297,13 +321,20 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     last_action_batch_tokens=0#for ngram analyzer
 
     model.train()
-    tokens_trained_so_far = 0
+
     train_sequences_since_last_action=[]
+    
+    start_batch = tokens_trained_so_far // (
+    config.dataset.batch_size * model.cfg.n_ctx
+    )
+    tokens_per_batch = config.dataset.batch_size * model.cfg.n_ctx
 
     # Training loop
     for batch_idx, (input_data, target_data) in enumerate(
         tqdm(train_dataloader, desc="Train Loop")
     ):
+        if batch_idx < start_batch:
+            continue
         t0 = time.time()
         input_data = input_data.to(device)
         # print(input_data.size(0))
@@ -320,12 +351,11 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         if (batch_idx + 1) % 10 == 0:
             wandb.log({
                 "train/step_loss": mean_loss.item(),
-                "tokens_trained": _calculate_tokens_trained(
-                    config.dataset.batch_size, 
-                    model.cfg.n_ctx, 
-                    batch_idx
-                )
-            })
+                "tokens_trained": tokens_trained_so_far
+                
+            },
+            step=tokens_trained_so_far
+        )
         optimizer.zero_grad()
         mean_loss.backward()
         optimizer.step()
@@ -333,11 +363,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         t1 = time.time()
         print(f"[TIMING] Train batch took {t1 - t0:.3f} seconds")
 
-        tokens_trained_so_far = _calculate_tokens_trained(
-            batch_size=config.dataset.batch_size,
-            sequence_len=model.cfg.n_ctx,
-            batch_idx=batch_idx,
-        )
+        tokens_trained_so_far +=tokens_per_batch
         
         # Checkpoint and evaluation
         if _check_if_action_batch(
@@ -373,6 +399,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
             _evaluate_log_and_persist(
                 persister=persister,
                 model=model,
+                optimizer=optimizer,
                 log=log,
                 verbose=config.verbose,
                 device=device,
@@ -405,6 +432,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     _evaluate_log_and_persist(
         persister=persister,
         model=model,
+        optimizer=optimizer,
         log=log,
         verbose=config.verbose,
         device=device,
