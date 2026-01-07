@@ -107,8 +107,8 @@ class Trun_Mess3(Process):
         ax = self.a * self.x
 
 
-        T[0, :, :] = [[0, 0, 0], [ax, by, bx], [ax, bx, by]]
-        T[1, :, :] = [[by+ay, ax+bx, 2*bx], [bx, ay, bx], [bx, ax, by]]
+        T[0, :, :] = [[0, 0, bx/2], [ax, by, bx], [ax, bx, by]]
+        T[1, :, :] = [[by+ay, ax+bx, 1.5*bx], [bx, ay, bx], [bx, ax, by]]
         T[2, :, :] = [[by, bx, ax], [bx, by, ax], [bx, bx, ay]]
 
 
