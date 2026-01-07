@@ -3,7 +3,6 @@
 
 
 
-from transformers.models import FalconForSequenceClassification
 from epsilon_transformers.training.configs.model_configs import RawModelConfig
 from epsilon_transformers.training.configs.training_configs import (
     LoggingConfig,
