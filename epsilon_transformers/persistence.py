@@ -19,9 +19,10 @@ class Persister:
         Args:
             save_dir: Directory to save checkpoints
         """
-        self.save_dir = pathlib.Path(save_dir)
+        sself.save_dir = pathlib.Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_count = 0
+        existing = self.get_model_checkpoints()
+        self.checkpoint_count = len(existing)
 
     def save_config(self, config_dict: Dict[str, Any]):
         """Saves the training configuration to JSON."""
@@ -176,6 +177,16 @@ class Persister:
         checkpoints=self.get_model_checkpoints()
         latest=checkpoints[-1]
         return self.load_model(checkpoint_path=latest, device=device)
+    
+    def load_latest_checkpoint(self, device: str = "cpu"):
+        checkpoints = self.get_model_checkpoints()
+        if not checkpoints:
+            print("[Persister] No checkpoints found")
+            return None
+
+        latest = checkpoints[-1]
+        print(f"[Persister] Loading checkpoint: {latest.name}")
+        return torch.load(latest, map_location=device)
 
     def save_metrics_to_csv(self, split: str, metrics: Dict[str, float], step: int):
         """
