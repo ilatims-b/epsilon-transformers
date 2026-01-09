@@ -223,6 +223,35 @@ class TransitionMatrixProcess(Process):
         }
 
 
+class sra(Process):
+    def __init__(self, s=10, r=2, a=20):
+        self.name = "sra"
+        self.s = s
+        self.r = r
+        self.a = a
+        super().__init__()
+    def _create_hmm(self):
+        total_emissions = self.s + self.r + self.a
+        num_states = 3
+        
+        # Ensure T is initialized with the full emission count
+        T = np.zeros((total_emissions, num_states, num_states))
+        
+        state_names = {"S": 0, "R": 1, "A": 2}
+        
+        # Transitions for 'S' emissions (index 0 to s-1)
+        for i in range(self.s):
+            T[i, 0, 1] = 1/self.s  # From State 0 to State 1
+            
+        # Transitions for 'R' emissions (index s to s+r-1)
+        for i in range(self.s, self.s + self.r):
+            T[i, 1, 2] = 1/self.r  # From State 1 to State 2
+            
+        # Transitions for 'A' emissions (index s+r to end)
+        for i in range(self.s + self.r, total_emissions):
+            T[i, 2, 0] = 1/self.a  # From State 2 to State 2 (self-loop)
+        return T, state_names
+
 PROCESS_REGISTRY: dict[str, type] = {
     key: value
     # cast because we know the current frame has the above classes

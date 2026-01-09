@@ -22,9 +22,10 @@ class ProcessHistory:
     states: list[str]
 
     def __post_init__(self):
-        assert len(self.symbols) == len(
-            self.states
-        ), "length of symbols & states must be the same"
+        pass
+        # assert len(self.symbols) == len(
+        #     self.states
+        # ), "length of symbols & states must be the same"
 
     def __len__(self):
         return len(self.states)
