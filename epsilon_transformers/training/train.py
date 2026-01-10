@@ -98,10 +98,10 @@ def _setup_analyzers(
             )
     return ngram_analyzer, markov_analyzer, simplex_analyzer 
 
-def _compute_myopic_entropy(val_process:object, n_ctx: int, device: torch.device) -> torch.Tensor:
+def _compute_myopic_entropy(val_process:object, n_ctx: int, device: torch.device, start_state_idx: Optional[int] = None) -> torch.Tensor:
     """Compute theoretical minimum (myopic) cross-entropy per position for given process."""
     #MSP_tree = mixed_state_tree(process, n_ctx + 1)
-    mixed_state_tree = val_process.derive_mixed_state_presentation(depth=n_ctx + 1)
+    mixed_state_tree = val_process.derive_mixed_state_presentation(depth=n_ctx + 1,start_state_idx=start_state_idx)
     #MSP_transition_matrix = mixed_state_tree.build_msp_transition_matrix()
     #block_entropy = mixed_state_tree.block_entropy
     myopic_entropy_rate = mixed_state_tree.myopic_entropy
@@ -334,7 +334,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     
     # Initialize KL analyzers
     val_process = get_process_object(config.dataset.process, config.dataset.process_params)
-    minimum_cross_entropy = _compute_myopic_entropy(val_process, model.cfg.n_ctx, device)
+    minimum_cross_entropy = _compute_myopic_entropy(val_process, model.cfg.n_ctx, device, start_state_idx=config.dataset.start_state_idx)
     ngram_analyzer, markov_analyzer, simplex_analyzer = _setup_analyzers(
         config=config,
         vocab_size=model.cfg.d_vocab,

@@ -23,11 +23,11 @@ from epsilon_transformers.training.train import train_model
 # ============================================================================
 
 model_config = RawModelConfig(
-    d_vocab=3,
+    d_vocab=32,
     d_model=64,
-    n_ctx=10,
+    n_ctx=3,
     d_head=8,
-    n_head=2,
+    n_head=1,
     d_mlp=256,
     n_layers=1,
 )
@@ -49,14 +49,19 @@ optimizer_config = OptimizerConfig(
 # ============================================================================
 
 dataset_config = ProcessDatasetConfig(
-    process='Trun_Mess3',
-    process_params={'x': 0.05, 'a': 0.85},
+    process='SRA',
+    process_params={
+        "num_subjects":10,
+        "num_relations":2,
+        "relation_probs":[0.7,0.3]
+    },
     batch_size=128,
     chunk_size=2048,
     num_tokens=150000,
-    sequence_length=10,
+    sequence_length=3,
     test_split=0.0625,
     test_batch_size=512,
+    start_state_idx=0
 )
 
 

@@ -1,4 +1,4 @@
-from typing import Literal, Optional, List as PyList, Dict
+from typing import Literal, Optional, List as PyList, Dict, Any
 from pydantic import BaseModel, field_validator, model_validator
 import pathlib
 import torch
@@ -60,7 +60,7 @@ class PersistanceConfig(Config):
 class ProcessDatasetConfig(Config):
     """Dataset configuration."""
     process: str
-    process_params: dict[str, float]
+    process_params: dict[str, Any]
     batch_size: int
     sequence_length: int
     num_tokens: int
@@ -68,6 +68,7 @@ class ProcessDatasetConfig(Config):
     test_batch_size: Optional[int]=None
     gpu_generation:bool=True
     chunk_size: int=2048
+    start_state_idx: Optional[int]=None
 
     @field_validator("batch_size")
     @classmethod
@@ -109,6 +110,7 @@ class ProcessDatasetConfig(Config):
             device=device if self.gpu_generation else torch.device("cpu"),
             chunk_size=self.chunk_size,
             num_samples=num_samples,
+            start_state_idx=self.start_state_idx
         )
         print(f"[Info] Created {'train' if train else 'test'} dataloader with {num_samples} samples, "
           f"sequence_length={seq_len}, batch_size={current_batch_size}, "

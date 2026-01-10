@@ -20,6 +20,7 @@ class ProcessDataset(IterableDataset):
     num_samples: int
     device:torch.device
     chunk_size: int
+    start_state_idx:Optional[int]=None
     
 
     samples:Optional[Iterator[int]]=None #for cpu fallback
@@ -32,6 +33,7 @@ class ProcessDataset(IterableDataset):
         num_samples: int,
         device: Optional[torch.device] = None,
         chunk_size: int = 2048,
+        start_state_idx: Optional[int] = None,
     ):
         super().__init__()
 
@@ -43,13 +45,13 @@ class ProcessDataset(IterableDataset):
         process: Process = process_class(**process_params)
 
         self.samples = process.yield_emissions(
-            sequence_len=num_samples * (sequence_length + 1)
+            sequence_len=num_samples * (sequence_length + 1),current_state_idx=start_state_idx
         )
         self.process: Process = process_class(**process_params)
         self.sequence_length = sequence_length
         self.num_samples = num_samples
         self.chunk_size = chunk_size
-
+        self.start_state_idx = start_state_idx
         if device is None:
             if torch.cuda.is_available():
                 device = torch.device("cuda")
@@ -85,7 +87,8 @@ class ProcessDataset(IterableDataset):
             batch_data = self.process.generate_batch_gpu(
                 batch_size=current_chunk_size,
                 seq_len=self.sequence_length + 1,
-                device=self.device
+                device=self.device,
+                start_state_idx=self.start_state_idx
             )
             
             # Yield samples one by one
@@ -104,6 +107,7 @@ class ProcessDatasetCPU(IterableDataset):
     samples: Iterator[int]
     sequence_length: int
     num_samples: int
+    start_state_idx:Optional[int]=None
 
     def __init__(
         self,
@@ -111,6 +115,7 @@ class ProcessDatasetCPU(IterableDataset):
         process_params: dict[str, float],
         sequence_length: int,
         num_samples: int,
+        start_state_idx: Optional[int] = None,
     ):
         super().__init__()
         process_class = PROCESS_REGISTRY.get(process_name, None)
@@ -120,10 +125,11 @@ class ProcessDatasetCPU(IterableDataset):
             )
         process: Process = process_class(**process_params)
         self.samples = process.yield_emissions(
-            sequence_len=num_samples * (sequence_length + 1)
+            sequence_len=num_samples * (sequence_length + 1),current_state_idx=start_state_idx
         )
         self.sequence_length = sequence_length
         self.num_samples = num_samples
+        self.start_state_idx = start_state_idx
 
     def __len__(self):
         return self.num_samples

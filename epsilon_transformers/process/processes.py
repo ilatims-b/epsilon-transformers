@@ -1,5 +1,5 @@
 import numpy as np
-from typing import cast
+from typing import Optional, cast
 from types import FrameType
 import inspect
 
@@ -223,35 +223,95 @@ class TransitionMatrixProcess(Process):
         }
 
 
-class sra(Process):
-    def __init__(self, s=10, r=2, a=20):
+class SRA(Process):
+    """
+    Subject-Relation-Attribute Process (SRA).
+    Generates triplets of (Subject, Relation, Attribute) consistently.
+    
+    Vocabulary Organization:
+    - 0 to R-1: Relation tokens
+    - R + i*(R+1): Subject i token
+    - R + i*(R+1) + 1 + j: Attribute token for Subject i and Relation j
+    
+    Topology:
+    - ROOT: Ready to emit Subject.
+    - HOLD_S[i]: Holding Subject i. Ready to emit Relation.
+    - HOLD_SR[i][j]: Holding Subject i and Relation j. Ready to emit Attribute.
+    """
+    def __init__(self, num_subjects=10, num_relations=2,relation_probs: list[float]|None=None):
         self.name = "sra"
-        self.s = s
-        self.r = r
-        self.a = a
+        self.S = num_subjects
+        self.R = num_relations
+        if relation_probs is None:
+            self.relation_probs=[1.0/self.R]*self.R
+        else :
+            if len(relation_probs) != self.R:
+                    raise ValueError(f"Length of relation_probs ({len(relation_probs)}) must match num_relations ({self.R})")
+            if not np.isclose(sum(relation_probs), 1.0):
+                    # Optional: normalize automatically or raise error. Raising error is safer for research.
+                    raise ValueError(f"relation_probs must sum to 1.0, got {sum(relation_probs)}")
+            self.relation_probs = relation_probs       
         super().__init__()
+
+
     def _create_hmm(self):
-        total_emissions = self.s + self.r + self.a
-        num_states = 3
+        # Vocab Size = R (relations) + S (subjects) + S*R (attributes)
+        # Actually structure is S blocks of (1 Subject + R Attributes)
+        vocab_size = self.R + self.S * (1 + self.R)
         
-        # Ensure T is initialized with the full emission count
-        T = np.zeros((total_emissions, num_states, num_states))
+        # States: 
+        # 0: ROOT (Expect Subject)
+        # 1..S: Expect Relation (After Subject i)
+        # S+1..S+S*R: Expect Attribute (After Subject i, Relation j)
+        num_states = 1 + self.S + (self.S * self.R)
         
-        state_names = {"S": 0, "R": 1, "A": 2}
+        T = np.zeros((vocab_size, num_states, num_states))
+        state_names = {"ROOT": 0}
         
-        # Transitions for 'S' emissions (index 0 to s-1)
-        for i in range(self.s):
-            T[i, 0, 1] = 1/self.s  # From State 0 to State 1
+        # --- Helper for Indices ---
+        def get_subj_state_idx(s_idx):
+            return 1 + s_idx
             
-        # Transitions for 'R' emissions (index s to s+r-1)
-        for i in range(self.s, self.s + self.r):
-            T[i, 1, 2] = 1/self.r  # From State 1 to State 2
+        def get_subj_rel_state_idx(s_idx, r_idx):
+            return 1 + self.S + (s_idx * self.R) + r_idx
+
+        def get_subj_token(s_idx):
+            return self.R + s_idx * (1 + self.R)
             
-        # Transitions for 'A' emissions (index s+r to end)
-        for i in range(self.s + self.r, total_emissions):
-            T[i, 2, 0] = 1/self.a  # From State 2 to State 2 (self-loop)
+        def get_attr_token(s_idx, r_idx):
+            return self.R + s_idx * (1 + self.R) + 1 + r_idx
+
+        # --- 1. From ROOT, Emit Subject i -> Go to HOLD_S[i] ---
+        # Uniform probability over all subjects
+        prob_s = 1.0 / self.S
+        for s in range(self.S):
+            token = get_subj_token(s)
+            next_state = get_subj_state_idx(s)
+            T[token, 0, next_state] = prob_s
+            state_names[f"Hold_S{s}"] = next_state
+
+        # --- 2. From HOLD_S[i], Emit Relation j -> Go to HOLD_SR[i][j] ---
+        # Uniform probability over all relations
+        # prob_r = 1.0 / self.R
+        for s in range(self.S):
+            current_state = get_subj_state_idx(s)
+            for r in range(self.R):
+                token = r # Relation tokens are 0..R-1
+                next_state = get_subj_rel_state_idx(s, r)
+                T[token, current_state, next_state] = self.relation_probs[r]
+                state_names[f"Hold_S{s}_R{r}"] = next_state
+
+        # --- 3. From HOLD_SR[i][j], Emit Attribute(i, j) -> Go to ROOT ---
+        # Deterministic emission of the correct attribute
+        for s in range(self.S):
+            for r in range(self.R):
+                current_state = get_subj_rel_state_idx(s, r)
+                token = get_attr_token(s, r)
+                T[token, current_state, 0] = 1.0
+
         return T, state_names
 
+    
 PROCESS_REGISTRY: dict[str, type] = {
     key: value
     # cast because we know the current frame has the above classes

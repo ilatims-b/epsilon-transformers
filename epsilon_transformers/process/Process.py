@@ -120,12 +120,13 @@ class Process(ABC):
                 self.steady_state_vector, dtype=torch.float32, device=device
             )
             self._gpu_device = device
-
+    #added
     def generate_batch_gpu(
         self,
         batch_size: int,
         seq_len: int,
         device: torch.device,
+        start_state_idx: Optional[int] = None,
     ) -> torch.Tensor:
         """
         Generate a batch of sequences on GPU in parallel.
@@ -144,10 +145,23 @@ class Process(ABC):
         steady_state = self._gpu_steady_state  # (num_states,)
         
         # Sample initial states for all sequences: (batch_size,)
-        current_states = torch.multinomial(
-            steady_state.unsqueeze(0).expand(batch_size, -1), 
-            num_samples=1
-        ).squeeze(-1)  # (batch_size,)
+        # Initialize current states
+        if start_state_idx is not None:
+            assert 0 <= start_state_idx < self.num_states, f"Invalid start_state_idx: {start_state_idx}"
+            # Create a tensor of shape (batch_size,) filled with start_state_idx
+            current_states = torch.full(
+                (batch_size,), 
+                start_state_idx, 
+                dtype=torch.long, 
+                device=device
+            )
+        else:
+            # Sample initial states from steady state distribution
+            current_states = torch.multinomial(
+                steady_state.unsqueeze(0).expand(batch_size, -1), 
+                num_samples=1
+            ).squeeze(-1)  # (batch_size,)
+
         
         emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
         
@@ -172,7 +186,7 @@ class Process(ABC):
             current_states = next_state
         
         return emissions
-       
+     #added  
     def _sample_emission(self, current_state_idx: Optional[int] = None) -> int:
         if current_state_idx is None:
             current_state_idx = np.random.choice(
@@ -186,7 +200,7 @@ class Process(ABC):
         p = self.transition_matrix[:, current_state_idx, :].sum(axis=1)
         emission = np.random.choice(self.vocab_len, p=p)
         return emission
-
+    #added
     def yield_emissions(
         self, sequence_len: int, current_state_idx: int | None = None
     ) -> Iterator[int]:
@@ -203,7 +217,7 @@ class Process(ABC):
             )
             yield emission
             current_state_idx = next_state_idx
-
+    #added
     def _sample_emission_and_next_state(
         self, current_state_idx: int
     ) -> tuple[int, int]:
@@ -214,13 +228,13 @@ class Process(ABC):
         emission = emission_next_state_idx // self.num_states
         next_state_idx = emission_next_state_idx % self.num_states
         return emission, next_state_idx
-
+    #added
     def yield_emission_histories(
-        self, sequence_len: int, num_sequences: int
+        self, sequence_len: int, num_sequences: int, start_state_idx: Optional[int]=None
     ) -> Iterator[list[int]]:
         for _ in range(num_sequences):
-            yield [x for x in self.yield_emissions(sequence_len=sequence_len)]
-
+            yield [x for x in self.yield_emissions(sequence_len=sequence_len, current_state_idx=start_state_idx)]
+    #added
     def generate_process_history(
         self, total_length: int, current_state_idx: int | None = None
     ) -> ProcessHistory:
@@ -248,9 +262,17 @@ class Process(ABC):
         return ProcessHistory(symbols=symbols, states=states)
 
     # TODO: You can get rid of the stack, and just iterate through the nodes & the depth as tuples
-    def derive_mixed_state_presentation(self, depth: int) -> MixedStateTree:
+    #added
+    def derive_mixed_state_presentation(self, depth: int,  start_state_idx: Optional[int] = None) -> MixedStateTree:
+        if start_state_idx is not None:
+            assert 0 <= start_state_idx < self.num_states, "start_state_idx out of bounds"
+            initial_dist = np.zeros(self.num_states)
+            initial_dist[start_state_idx] = 1.0
+        else:
+            initial_dist = self.steady_state_vector
+
         tree_root = MixedStateTreeNode(
-            state_prob_vector=self.steady_state_vector,
+            state_prob_vector = initial_dist,
             children=set(),
             path=[],
             emission_prob=0,
@@ -259,7 +281,7 @@ class Process(ABC):
 
         stack: deque[
             tuple[MixedStateTreeNode, Float[np.ndarray, "num_states"], list[int], int]
-        ] = deque([(tree_root, self.steady_state_vector, [], 0)])
+        ] = deque([(tree_root, initial_dist, [], 0)])
         while stack:
             current_node, state_prob_vector, current_path, current_depth = stack.pop()
             if current_depth < depth:
@@ -294,7 +316,7 @@ class Process(ABC):
             root_node=tree_root, process=self.name, nodes=nodes, depth=depth
         )
 
-
+#added
 def _compute_emission_probabilities(
     hmm: Process, state_prob_vector: Float[np.ndarray, "num_states"]
 ) -> Float[np.ndarray, "vocab_len"]:
@@ -306,7 +328,7 @@ def _compute_emission_probabilities(
     emission_probs /= emission_probs.sum()
     return emission_probs
 
-
+#added
 def _compute_next_distribution(
     epsilon_machine: Float[np.ndarray, "vocab_len num_states num_states"],
     current_state_prob_vector: Float[np.ndarray, "num_states"],
@@ -376,6 +398,7 @@ class NormTransitionMixin:
         batch_size: int,
         seq_len: int,
         device: torch.device,
+        start_state_idx: Optional[int] = None,
     ) -> torch.Tensor:
         """
         Generate a batch of sequences on GPU for NormTransitionMixin processes.
@@ -389,12 +412,22 @@ class NormTransitionMixin:
         T = self._gpu_transition_matrix  # (vocab_len, num_states, num_states)
         T_norm = self._gpu_norm_transition_matrix  # (vocab_len, num_states, num_states)
         steady_state = self._gpu_steady_state  # (num_states,)
-        
         # Sample initial states for all sequences: (batch_size,)
-        current_states = torch.multinomial(
-            steady_state.unsqueeze(0).expand(batch_size, -1), 
-            num_samples=1
-        ).squeeze(-1)  # (batch_size,)
+        if start_state_idx is not None:
+            assert 0 <= start_state_idx < self.num_states, f"Invalid start_state_idx: {start_state_idx}"
+            current_states = torch.full(
+                (batch_size,), 
+                start_state_idx, 
+                dtype=torch.long, 
+                device=device
+            )
+        else:
+            current_states = torch.multinomial(
+                steady_state.unsqueeze(0).expand(batch_size, -1), 
+                num_samples=1
+            ).squeeze(-1)  # (batch_size,)
+        
+        
         
         emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
         
@@ -441,9 +474,15 @@ class NormTransitionMixin:
 
         return emission, next_state_idx
     
-    def derive_mixed_state_presentation(self, depth: int) -> MixedStateTree:
+    def derive_mixed_state_presentation(self, depth: int, start_state_idx: Optional[int] = None) -> MixedStateTree:
+        if start_state_idx is not None:
+            assert 0 <= start_state_idx < self.num_states, "start_state_idx out of bounds"
+            initial_dist = np.zeros(self.num_states)
+            initial_dist[start_state_idx] = 1.0
+        else:
+            initial_dist = self.steady_state_vector
         tree_root = MixedStateTreeNode(
-            state_prob_vector=self.steady_state_vector,
+            state_prob_vector= initial_dist,
             children=set(),
             path=[],
             emission_prob=0,
@@ -452,7 +491,7 @@ class NormTransitionMixin:
 
         stack: deque[
             tuple[MixedStateTreeNode, Float[np.ndarray, "num_states"], list[int], int]
-        ] = deque([(tree_root, self.steady_state_vector, [], 0)])
+        ] = deque([(tree_root, initial_dist, [], 0)])
         while stack:
             current_node, state_prob_vector, current_path, current_depth = stack.pop()
             if current_depth < depth:
