@@ -116,10 +116,18 @@ class Process(ABC):
             self._gpu_transition_matrix = torch.tensor(
                 self.transition_matrix, dtype=torch.float32, device=device
             )
+            # self._gpu_steady_state = torch.tensor(
+            #     self.steady_state_vector, dtype=torch.float32, device=device
+            # )
+            self._gpu_device = device
+    def _get_gpu_steady_state(self, device: torch.device) -> torch.Tensor:
+        """Helper to safely get or compute steady state tensor."""
+        if self._gpu_steady_state is None or self._gpu_device != device:
             self._gpu_steady_state = torch.tensor(
                 self.steady_state_vector, dtype=torch.float32, device=device
             )
-            self._gpu_device = device
+        return self._gpu_steady_state
+               
     #added
     def generate_batch_gpu(
         self,
