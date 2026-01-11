@@ -23,12 +23,12 @@ from epsilon_transformers.training.train import train_model
 # ============================================================================
 
 model_config = RawModelConfig(
-    d_vocab=32,
-    d_model=64,
+    d_vocab=125,
+    d_model=128,
     n_ctx=3,
-    d_head=8,
+    d_head=16,
     n_head=1,
-    d_mlp=256,
+    d_mlp=512,
     n_layers=1,
 )
 
@@ -51,16 +51,16 @@ optimizer_config = OptimizerConfig(
 dataset_config = ProcessDatasetConfig(
     process='SRA',
     process_params={
-        "num_subjects":10,
-        "num_relations":2,
-        "relation_probs":[0.7,0.3]
+        "num_subjects":20,
+        "num_relations":5,
+        "relation_probs":[0.2,0.2,0.2,0.2,0.2]
     },
     batch_size=128,
     chunk_size=2048,
-    num_tokens=150000,
+    num_tokens=37500,
     sequence_length=3,
-    test_split=0.0625,
-    test_batch_size=512,
+    test_split=0.1,
+    test_batch_size=1250,
     start_state_idx=0
 )
 
@@ -72,8 +72,8 @@ from pathlib import Path
 
 persistance_config = PersistanceConfig(
     location='local',
-    collection_location=Path('models/mess3/single_layer'),
-    checkpoint_every_n_tokens=125000
+    collection_location=Path('models/trial'),
+    checkpoint_every_n_tokens=3840
 )
 
 
@@ -85,7 +85,7 @@ logging_config = LoggingConfig(
     wandb=True,
     # NEW: Option 1 - Pass API key directly (recommended for testing)
     wandb_api_key="9df77e7cbad36f3323af2ea208aa4027a970df97",
-    run_name="trial",# NEW!
+    run_name="trial_rsa*",
     # OR use environment variable: export WANDB_API_KEY="YOUR_KEY"
 )
 
@@ -114,11 +114,11 @@ analysis_config = AnalysisConfig(
     ),
     markov_kl_analysis=MarkovKLAnalysisConfig(
         enabled=True,
-        return_per_position=True,
+        return_per_position=False,
     ),
     # NEW: Simplex Analysis Configuration
     simplex_analysis=SimplexAnalysisConfig(
-        enabled=True,
+        enabled=False,
         hook_point="blocks.0.hook_resid_post", # Adjust layer index if n_layers changes
         num_samples_for_probe=None
     )

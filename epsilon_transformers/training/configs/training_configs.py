@@ -355,7 +355,8 @@ class TrainConfig(Config):
         # Only validate if process is in PROCESS_REGISTRY
         if dataset_process and dataset_process in PROCESS_REGISTRY:
             try:
-                process_vocab_len = PROCESS_REGISTRY[dataset_process]().vocab_len
+                process_instance=PROCESS_REGISTRY[dataset_process](**self.dataset.process_params)
+                process_vocab_len = process_instance.vocab_len
                 if self.model.d_vocab != process_vocab_len:
                     raise ValueError(
                         f"Model's d_vocab ({self.model.d_vocab}) doesn't match "
