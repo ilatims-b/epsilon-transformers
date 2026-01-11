@@ -93,8 +93,8 @@ class SimplexAnalyzer:
         self.ground_truth_simplex_coords: Optional[np.ndarray] = None
         self.constrained: Optional[bool] = False
 
-    def setup_from_tree(self, process, depth: int, num_samples: int=None, constrained: Optional[bool]=False):
-        msp_tree = process.derive_mixed_state_presentation(depth=depth)
+    def setup_from_tree(self, process, depth: int, num_samples: int=None, constrained: Optional[bool]=False, start_state_idx: Optional[int]=None):
+        msp_tree = process.derive_mixed_state_presentation(depth=depth, start_state_idx=start_state_idx)
         
         sequences = []
         beliefs = []
@@ -109,9 +109,9 @@ class SimplexAnalyzer:
 
         self.test_inputs=torch.tensor(valid_paths, dtype=torch.long, device=self.device)
         if constrained:
-            beliefs_tensor = self._compute_constrained_beliefs_for_batch(self.test_inputs, process)
+            beliefs_tensor = self._compute_constrained_beliefs_for_batch(self.test_inputs, process, start_state_idx=start_state_idx)
         else:
-            beliefs_tensor = self._compute_beliefs_for_batch(self.test_inputs, process)
+            beliefs_tensor = self._compute_beliefs_for_batch(self.test_inputs, process, start_state_idx=start_state_idx)
         self.test_beliefs_flat=beliefs_tensor.reshape(-1, beliefs_tensor.shape[-1]).cpu().numpy()
 
         true_x, true_y = _project_to_simplex(self.test_beliefs_flat)
@@ -157,7 +157,7 @@ class SimplexAnalyzer:
         
         return pred_x, pred_y, float(mse)    
         
-    def _compute_beliefs_for_batch(self, sequences, process):
+    def _compute_beliefs_for_batch(self, sequences, process,start_state_idx: Optional[int]=None):
         """Vectorized HMM Filter handling both standard and normalized transitions."""
         batch, seq_len = sequences.shape
         device = sequences.device
@@ -175,7 +175,12 @@ class SimplexAnalyzer:
             T = to_tensor(process.transition_matrix)
 
         # Initial State (Steady State)
-        current = to_tensor(process.steady_state_vector).unsqueeze(0).expand(batch, -1) # [B, S]
+        if start_state_idx is not None:
+            current_vec=torch.zeros(process.num_states,device=device,dtype=torch.float32)
+            current_vec[start_state_idx]=1.0
+        else:
+            current_vec = to_tensor(process.steady_state_vector)
+        current = current_vec.unsqueeze(0).expand(batch, -1) # [B, S]
         
         all_beliefs = []
         for t in range(seq_len):
@@ -200,7 +205,7 @@ class SimplexAnalyzer:
             
         return torch.stack(all_beliefs, dim=1)
     
-    def _compute_constrained_beliefs_for_batch(self, sequences, process):
+    def _compute_constrained_beliefs_for_batch(self, sequences, process, start_state_idx: Optional[int]=None):
         """
         Computes constrained beliefs: 
         B_d = pi + sum_{n=0}^{d-1} (pi @ T^{|z_{d-n}} @ T^n - pi)
@@ -210,7 +215,11 @@ class SimplexAnalyzer:
         batch, seq_len = sequences.shape
         device = sequences.device
         num_states = process.num_states
-        pi = torch.tensor(process.steady_state_vector, dtype=torch.float32, device=device) # [S]
+        if start_state_idx is not None:
+            pi=torch.zeros(process.num_states,device=device,dtype=torch.float32)
+            pi[start_state_idx]=1.0
+        else:
+            pi = torch.tensor(process.steady_state_vector, dtype=torch.float32, device=device) # [S]
         T_labeled = torch.tensor(process.transition_matrix, dtype=torch.float32, device=device)
         if T_labeled.ndim == 3:
             T_std = T_labeled.sum(dim=0) # [S, S]

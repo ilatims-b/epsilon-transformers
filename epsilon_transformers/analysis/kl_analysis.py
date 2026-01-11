@@ -18,7 +18,8 @@ class MarkovKLAnalyzer:
     def compute_kl_divergence_batch(self,
                                    model_logits: torch.Tensor,
                                    sequences: torch.Tensor,
-                                   process) -> Tuple[torch.Tensor, torch.Tensor]:
+                                   process,
+                                   start_state_idx: Optional[int]=None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute KL divergence by tracking state through sequence.
         Supports standard processes and Linear_Mess3 (NormTransitionMixin).
@@ -37,11 +38,14 @@ class MarkovKLAnalyzer:
             T_next = self._get_tensor(process.norm_transition_matrix, device)
         else:
             T_next = T_emit # Standard process uses same matrix for both
-
-        vec = process.steady_state_vector
-        if isinstance(vec, np.ndarray):
-            vec = torch.from_numpy(vec).float().to(device)
-        
+        if start_state_idx is not None:
+            vec=torch.zeros(process.num_states,device=device,dtype=torch.float32)
+            vec[start_state_idx]=1.0
+        else:
+            vec = process.steady_state_vector
+            if isinstance(vec, np.ndarray):
+                vec = torch.from_numpy(vec).float().to(device)
+            
         current_states = vec.unsqueeze(0).expand(batch_size, -1)
         
         kl_per_position = torch.zeros(seq_len, device=device)
@@ -96,12 +100,12 @@ class MarkovKLAnalyzer:
 
         return kl_per_position, kl_all_values
 
-def compute_markov_kl_divergence(model_logits, sequences, process, analyzer=None, return_per_position=True):
+def compute_markov_kl_divergence(model_logits, sequences, process, analyzer=None, return_per_position=True,start_state_idx: Optional[int]=None) -> Dict[str, float]:
     if analyzer is None:
         analyzer = MarkovKLAnalyzer(model_logits.shape[-1], model_logits.shape[1])
     
     kl_per_position, kl_all_values = analyzer.compute_kl_divergence_batch(
-        model_logits, sequences, process
+        model_logits, sequences, process, start_state_idx=start_state_idx
     )
     
     results = {

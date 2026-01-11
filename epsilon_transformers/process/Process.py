@@ -142,7 +142,7 @@ class Process(ABC):
         self._ensure_gpu_tensors(device)
         
         T = self._gpu_transition_matrix  # (vocab_len, num_states, num_states)
-        steady_state = self._gpu_steady_state  # (num_states,)
+        
         
         # Sample initial states for all sequences: (batch_size,)
         # Initialize current states
@@ -157,6 +157,7 @@ class Process(ABC):
             )
         else:
             # Sample initial states from steady state distribution
+            steady_state = self._gpu_steady_state  # (num_states,)
             current_states = torch.multinomial(
                 steady_state.unsqueeze(0).expand(batch_size, -1), 
                 num_samples=1
@@ -411,7 +412,7 @@ class NormTransitionMixin:
         
         T = self._gpu_transition_matrix  # (vocab_len, num_states, num_states)
         T_norm = self._gpu_norm_transition_matrix  # (vocab_len, num_states, num_states)
-        steady_state = self._gpu_steady_state  # (num_states,)
+        
         # Sample initial states for all sequences: (batch_size,)
         if start_state_idx is not None:
             assert 0 <= start_state_idx < self.num_states, f"Invalid start_state_idx: {start_state_idx}"
@@ -422,6 +423,7 @@ class NormTransitionMixin:
                 device=device
             )
         else:
+            steady_state = self._gpu_steady_state  # (num_states,)
             current_states = torch.multinomial(
                 steady_state.unsqueeze(0).expand(batch_size, -1), 
                 num_samples=1

@@ -131,7 +131,8 @@ def _compute_validation_metrics(
     simplex_analyzer: Optional[SimplexAnalyzer] = None,
     val_process: Optional[object] = None,
     return_per_position: bool = True,
-    minimum_cross_entropy: torch.Tensor=None
+    minimum_cross_entropy: torch.Tensor=None,
+    start_state_idx: Optional[int] = None
 ) -> Log:
     """Compute validation metrics including loss and KL divergences."""
 
@@ -218,6 +219,7 @@ def _compute_validation_metrics(
                 process=val_process,
                 analyzer=markov_analyzer,
                 return_per_position=return_per_position,
+                start_state_idx=start_state_idx
             )
             for metric_name, metric_value in markov_metrics.items():
                 log.update_metrics("test", metric_name=metric_name, loss=metric_value)
@@ -240,6 +242,7 @@ def _evaluate_log_and_persist(
     val_process: Optional[object] = None,
     return_per_position: bool = True,
     minimum_cross_entropy: torch.Tensor=None
+
 ):
     """Evaluate model, log metrics, and persist checkpoint."""
     eval_dataloader = dataset_config.to_dataloader(
@@ -256,7 +259,8 @@ def _evaluate_log_and_persist(
             simplex_analyzer=simplex_analyzer,
             val_process=val_process,
             return_per_position=return_per_position,
-            minimum_cross_entropy=minimum_cross_entropy
+            minimum_cross_entropy=minimum_cross_entropy,
+            start_state_idx=dataset_config.start_state_idx
         )
     aggregated_metrics=log.get_aggregated_metrics()
     if verbose:
@@ -344,7 +348,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     if hasattr(config.analysis, 'simplex_analysis'):
         num_samples=config.analysis.simplex_analysis.num_samples_for_probe
     if simplex_analyzer is not None:
-        _,__=simplex_analyzer.setup_from_tree(process=val_process,depth=model.cfg.n_ctx + 1,num_samples=num_samples)
+        _,__=simplex_analyzer.setup_from_tree(process=val_process,depth=model.cfg.n_ctx + 1,num_samples=num_samples,start_state_idx=config.dataset.start_state_idx)
 
     # # for simplex mse analysis
     # mixed_state_tree = val_process.derive_mixed_state_presentation(depth=model.cfg.n_ctx + 1)
