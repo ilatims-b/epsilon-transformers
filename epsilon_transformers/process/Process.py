@@ -165,7 +165,8 @@ class Process(ABC):
             )
         else:
             # Sample initial states from steady state distribution
-            steady_state = self._gpu_steady_state  # (num_states,)
+            steady_state=self._get_gpu_steady_state(device)
+            # steady_state = self._gpu_steady_state  # (num_states,)
             current_states = torch.multinomial(
                 steady_state.unsqueeze(0).expand(batch_size, -1), 
                 num_samples=1
@@ -431,7 +432,7 @@ class NormTransitionMixin:
                 device=device
             )
         else:
-            steady_state = self._gpu_steady_state  # (num_states,)
+            steady_state = self._get_gpu_steady_state(device)  # (num_states,)
             current_states = torch.multinomial(
                 steady_state.unsqueeze(0).expand(batch_size, -1), 
                 num_samples=1
