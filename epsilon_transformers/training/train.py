@@ -109,16 +109,21 @@ def _compute_myopic_entropy(val_process:object, n_ctx: int, device: torch.device
     print(f"myopic entropy rates:{minimum_cross_entropy}")
     return torch.tensor(minimum_cross_entropy, dtype=torch.float32, device=device)
 
-def _compute_relative_losses(loss_tensor: torch.Tensor, minimum_cross_entropy: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def _compute_relative_losses(loss_tensor: torch.Tensor, minimum_cross_entropy: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute mean loss and relative loss per position.
     loss_tensor: (batch, seq_len)
     """
     per_position_loss = loss_tensor.mean(dim=0)
     #print(per_position_loss)
-    relative_loss = per_position_loss / minimum_cross_entropy
-    mean_loss = per_position_loss.mean()
-    return mean_loss, relative_loss
+    if minimum_cross_entropy is not None:
+        relative_loss = per_position_loss / minimum_cross_entropy
+        mean_loss=per_position_loss.mean()
+        return mean_loss, relative_loss
+    else:  
+        mean_loss = per_position_loss.mean()
+        relative_loss = None
+        return mean_loss, relative_loss
 
 
 def _compute_validation_metrics(
@@ -131,7 +136,7 @@ def _compute_validation_metrics(
     simplex_analyzer: Optional[SimplexAnalyzer] = None,
     val_process: Optional[object] = None,
     return_per_position: bool = True,
-    minimum_cross_entropy: torch.Tensor=None,
+    minimum_cross_entropy:Optional[torch.Tensor]=None,
     start_state_idx: Optional[int] = None
 ) -> Log:
     """Compute validation metrics including loss and KL divergences."""
@@ -158,14 +163,17 @@ def _compute_validation_metrics(
             logits=model(input_data, return_type="logits")
             loss=criterion(logits.view(-1,logits.size(-1)),target_data.view(-1))
             loss=loss.view(input_data.shape[0],input_data.shape[1])
-            
-            mean_loss, relative_loss=_compute_relative_losses(loss,minimum_cross_entropy)
-            
-            #  Log per-batch metrics (Log class will average them later)
-            log.update_metrics("test", loss=mean_loss.item(), metric_name="loss")
-            log.update_metrics("test", loss=relative_loss.mean().item(), metric_name="relative_loss")
-            for i, rel_val in enumerate(relative_loss):
-                log.update_metrics("test", loss=rel_val.item(), metric_name=f"relative_loss_{i}")
+            if minimum_cross_entropy is not None:
+                mean_loss, relative_loss=_compute_relative_losses(loss,minimum_cross_entropy)
+                
+                #  Log per-batch metrics (Log class will average them later)
+                log.update_metrics("test", loss=mean_loss.item(), metric_name="loss")
+                log.update_metrics("test", loss=relative_loss.mean().item(), metric_name="relative_loss")
+                for i, rel_val in enumerate(relative_loss):
+                    log.update_metrics("test", loss=rel_val.item(), metric_name=f"relative_loss_{i}")
+            else:
+                mean_loss,_=_compute_relative_losses(loss,minimum_cross_entropy=None)
+                log.update_metrics("test", loss=mean_loss.item(), metric_name="loss")        
             
             # Collect for KL analysis
             all_logits.append(logits)
@@ -241,7 +249,7 @@ def _evaluate_log_and_persist(
     simplex_analyzer: Optional[SimplexAnalyzer] = None,
     val_process: Optional[object] = None,
     return_per_position: bool = True,
-    minimum_cross_entropy: torch.Tensor=None
+    minimum_cross_entropy: Optional[torch.Tensor]=None
 
 ):
     """Evaluate model, log metrics, and persist checkpoint."""
@@ -338,7 +346,10 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     
     # Initialize KL analyzers
     val_process = get_process_object(config.dataset.process, config.dataset.process_params)
-    minimum_cross_entropy = _compute_myopic_entropy(val_process, model.cfg.n_ctx, device, start_state_idx=config.dataset.start_state_idx)
+    if config.logging.relative_loss:
+        minimum_cross_entropy = _compute_myopic_entropy(val_process, model.cfg.n_ctx, device, start_state_idx=config.dataset.start_state_idx)
+    else:
+        minimum_cross_entropy = None    
     ngram_analyzer, markov_analyzer, simplex_analyzer = _setup_analyzers(
         config=config,
         vocab_size=model.cfg.d_vocab,

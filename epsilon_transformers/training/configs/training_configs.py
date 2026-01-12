@@ -176,6 +176,7 @@ class LoggingConfig(Config):
     project_name: str | None = None
     wandb_api_key: str | None = None
     run_name: str | None = None
+    relative_loss: bool = True
 
     @field_validator("project_name")
     @classmethod
