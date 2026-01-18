@@ -78,7 +78,7 @@ class ProcessDatasetConfig(Config):
             raise ValueError("batch_size must be > 0")
         return v
 
-    def to_dataloader(self, sequence_length: int, train: bool,device:Optional[torch.device]=None) -> DataLoader:
+    def to_dataloader(self, sequence_length: int, train: bool,device:Optional[torch.device]=None,suffix_eval: bool = False) -> DataLoader:
         """Create dataloader from config."""
         # Use sequence_length from config by default
         seq_len = sequence_length
@@ -103,6 +103,7 @@ class ProcessDatasetConfig(Config):
         else:
             current_batch_size=self.test_batch_size if self.test_batch_size is not None else self.batch_size 
             current_chunk_size=self.test_batch_size if self.test_batch_size is not None else self.chunk_size
+
         dataset = ProcessDataset(
             process_name=self.process,
             process_params=self.process_params,
@@ -112,6 +113,15 @@ class ProcessDatasetConfig(Config):
             num_samples=num_samples,
             start_state_idx=self.start_state_idx
         )
+        
+        if suffix_eval:
+            dataset.enable_truncation = True
+            dataset.truncation_choices = [
+                seq_len,
+                seq_len - 1,
+                seq_len - 2,
+            ]
+
         print(f"[Info] Created {'train' if train else 'test'} dataloader with {num_samples} samples, "
           f"sequence_length={seq_len}, batch_size={current_batch_size}, "
           f"chunk_size={current_chunk_size}, "

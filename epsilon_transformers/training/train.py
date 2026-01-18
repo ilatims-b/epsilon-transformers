@@ -109,12 +109,20 @@ def _compute_myopic_entropy(val_process:object, n_ctx: int, device: torch.device
     print(f"myopic entropy rates:{minimum_cross_entropy}")
     return torch.tensor(minimum_cross_entropy, dtype=torch.float32, device=device)
 
-def _compute_relative_losses(loss_tensor: torch.Tensor, minimum_cross_entropy: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+def _compute_relative_losses(loss_tensor: torch.Tensor, minimum_cross_entropy: Optional[torch.Tensor],token_mask: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute mean loss and relative loss per position.
-    loss_tensor: (batch, seq_len)
+    loss_tensor: (batch, seq_len) 
     """
-    per_position_loss = loss_tensor.mean(dim=0)
+    if token_mask is not None:
+        # avoid division by zero
+        mask_f = token_mask.float()
+        per_position_loss = (loss_tensor * mask_f).sum(dim=0) / mask_f.sum(dim=0).clamp(min=1.0)
+    else:
+        per_position_loss = loss_tensor.mean(dim=0)
+
+   
     #print(per_position_loss)
     if minimum_cross_entropy is not None:
         relative_loss = per_position_loss / minimum_cross_entropy
@@ -157,14 +165,19 @@ def _compute_validation_metrics(
         for i, batch in enumerate(eval_dataloader):
             t0 = time.time()
 
-            input_data, target_data= batch
+            input_data, target_data, prefix_mask, suffix_mask = batch
+
             input_data,target_data = input_data.to(device), target_data.to(device)
-            
-            logits=model(input_data, return_type="logits")
+            prefix_mask = prefix_mask.to(device)
+            suffix_mask = suffix_mask.to(device)
+            PAD_TOKEN = model.cfg.pad_token_id
+            truncated_input = input_data.clone()
+            truncated_input[suffix_mask] = PAD_TOKEN
+            logits=model(truncated_input, return_type="logits")
             loss=criterion(logits.view(-1,logits.size(-1)),target_data.view(-1))
             loss=loss.view(input_data.shape[0],input_data.shape[1])
             if minimum_cross_entropy is not None:
-                mean_loss, relative_loss=_compute_relative_losses(loss,minimum_cross_entropy)
+                mean_loss, relative_loss=_compute_relative_losses(loss,minimum_cross_entropy,prefix_mask)
                 
                 #  Log per-batch metrics (Log class will average them later)
                 log.update_metrics("test", loss=mean_loss.item(), metric_name="loss")
@@ -174,10 +187,13 @@ def _compute_validation_metrics(
             else:
                 mean_loss,_=_compute_relative_losses(loss,minimum_cross_entropy=None)
                 log.update_metrics("test", loss=mean_loss.item(), metric_name="loss")        
-            
+            masked_logits = logits * prefix_mask.unsqueeze(-1)
+            masked_sequences = truncated_input * prefix_mask
+
             # Collect for KL analysis
-            all_logits.append(logits)
-            all_sequences.append(input_data)
+            all_logits.append(masked_logits)
+            all_sequences.append(masked_sequences)
+
             num_batches += 1
             t1 = time.time()
             t_model_fwd += (t1 - t0)
@@ -296,6 +312,36 @@ def _evaluate_log_and_persist(
     log.reset()
 
 
+def evaluate_suffix_only(model, dataloader, device):
+    model.eval()
+    criterion = nn.CrossEntropyLoss(reduction="none")
+
+    total_loss = 0.0
+    total_tokens = 0
+
+    with torch.no_grad():
+        for batch in dataloader:
+            input_data, target_data, prefix_mask, suffix_mask = batch
+            input_data = input_data.to(device)
+            target_data = target_data.to(device)
+            suffix_mask = suffix_mask.to(device)
+
+            logits = model(input_data, return_type="logits")
+
+            loss = criterion(
+                logits.view(-1, logits.size(-1)),
+                target_data.view(-1),
+            ).view(target_data.shape)
+
+            suffix_loss = loss[suffix_mask]
+            if suffix_loss.numel() > 0:
+                total_loss += suffix_loss.sum().item()
+                total_tokens += suffix_loss.numel()
+
+    return total_loss / max(total_tokens, 1)
+
+
+
 
 def train_model(config: TrainConfig, run_id: str = None, return_per_position: bool = True) -> Tuple:
     """Train transformer model with KL analysis metrics."""
@@ -384,7 +430,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     tokens_per_batch = config.dataset.batch_size * model.cfg.n_ctx
 
     # Training loop
-    for batch_idx, (input_data, target_data) in enumerate(
+    for batch_idx, (input_data, target_data,prefix_mask,suffix_mask) in enumerate(
         tqdm(train_dataloader, desc="Train Loop")
     ):
         if batch_idx < start_batch:
@@ -393,13 +439,19 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         input_data = input_data.to(device)
         # print(input_data.size(0))
         target_data = target_data.to(device)
+        prefix_mask = prefix_mask.to(device)
+        suffix_mask = suffix_mask.to(device)
         if ngram_analyzer is not None:
             train_sequences_since_last_action.append(input_data)
-        logits = model(input_data, return_type="logits")
+        PAD_TOKEN = model.cfg.pad_token_id
+        truncated_input = input_data.clone()
+        truncated_input[suffix_mask] = PAD_TOKEN
+
+        logits = model(truncated_input, return_type="logits")
         criterion=nn.CrossEntropyLoss(reduction="none")
         loss_per_token = criterion(logits.view(-1, logits.size(-1)), target_data.view(-1))
         loss_per_token = loss_per_token.view(input_data.size(0), input_data.size(1))
-        mean_loss, _ = _compute_relative_losses(loss_per_token, minimum_cross_entropy)
+        mean_loss, _ = _compute_relative_losses(loss_per_token, minimum_cross_entropy,prefix_mask)
 
         log.update_metrics(train_or_test="train", loss=mean_loss.item(),metric_name="loss")
         if (batch_idx + 1) % 10 == 0:
@@ -417,7 +469,8 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         t1 = time.time()
         print(f"[TIMING] Train batch took {t1 - t0:.3f} seconds")
 
-        tokens_trained_so_far +=tokens_per_batch
+        tokens_trained_so_far +=prefix_mask.sum().item()
+
         
         # Checkpoint and evaluation
         if _check_if_action_batch(
@@ -468,7 +521,6 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
             t1 = time.time()
             #print(f"[TIMING] Full evaluation step took {t1 - t0:.3f} seconds")
             model.train()
-    
     # Final evaluation
     model.eval()
     #build final ngram table for remaining sequences
@@ -500,6 +552,18 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         return_per_position=return_per_position,
         minimum_cross_entropy=minimum_cross_entropy
     )
+
+    suffix_loader = config.dataset.to_dataloader(
+        sequence_length=model.cfg.n_ctx,
+        train=False,
+        suffix_eval=True,
+    )
+
+    suffix_ce = evaluate_suffix_only(model, suffix_loader, device)
+    print(f"[SUFFIX-ONLY CE] {suffix_ce:.4f}")
+    
+    wandb.log({"test/suffix_only_ce": suffix_ce})
+
     
     # Close logger
     config.logging.close()

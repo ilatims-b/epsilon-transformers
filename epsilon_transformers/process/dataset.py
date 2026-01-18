@@ -2,6 +2,7 @@ import torch
 from typing import Iterator, Optional
 from jaxtyping import Float
 from torch.utils.data import IterableDataset
+import random
 
 from epsilon_transformers.process.Process import Process
 from epsilon_transformers.process.processes import PROCESS_REGISTRY
@@ -34,6 +35,7 @@ class ProcessDataset(IterableDataset):
         device: Optional[torch.device] = None,
         chunk_size: int = 2048,
         start_state_idx: Optional[int] = None,
+        
     ):
         super().__init__()
 
@@ -52,6 +54,8 @@ class ProcessDataset(IterableDataset):
         self.num_samples = num_samples
         self.chunk_size = chunk_size
         self.start_state_idx = start_state_idx
+        self.enable_truncation = False
+        self.truncation_choices = None
         if device is None:
             if torch.cuda.is_available():
                 device = torch.device("cuda")
@@ -96,8 +100,26 @@ class ProcessDataset(IterableDataset):
             for i in range(current_chunk_size):
                 seq = batch_data[i]
                 # Input: 0 to N-1, Target: 1 to N
-                yield (seq[:-1], seq[1:])
-            
+                input_seq = seq[:-1]
+                target_seq =  seq[1:]
+
+                if not self.enable_truncation:
+                    prefix_mask = torch.ones(self.sequence_length, dtype=torch.bool, device=self.device)
+                    suffix_mask = torch.zeros(self.sequence_length, dtype=torch.bool, device=self.device)
+
+                    yield input_seq, target_seq, prefix_mask, suffix_mask
+                else:
+                    keep_len = random.choice(self.truncation_choices)
+                    prefix_mask = torch.zeros(self.sequence_length, dtype=torch.bool, device=self.device)
+                    prefix_mask[:keep_len] = True
+
+                    suffix_mask = ~prefix_mask
+
+                    PAD_TOKEN = 0  
+                    truncated_input = input_seq.clone()
+                    if keep_len < self.sequence_length:
+                        truncated_input[keep_len:] = PAD_TOKEN
+                    yield truncated_input,target_seq, prefix_mask, suffix_mask      
             samples_yielded += current_chunk_size
 
 class ProcessDatasetCPU(IterableDataset):
@@ -149,10 +171,26 @@ def process_dataset_collate_fn(
     Float[torch.Tensor, "batch_size sequence_length"],
     Float[torch.Tensor, "batch_size sequence_length"],
 ]:
+    
     data = [x[0] for x in batch]
     labels = [x[1] for x in batch]
-    # Check if already tensors (GPU path) or lists (CPU path)
+    prefix_mask = [x[2] for x in batch]
+    suffix_mask = [x[3] for x in batch]
+
+
     if isinstance(data[0], torch.Tensor):
-        return torch.stack(data), torch.stack(labels)
+        return (
+            torch.stack(data),
+            torch.stack(labels),
+            torch.stack(prefix_mask),
+            torch.stack(suffix_mask),
+        )
     else:
-        return torch.tensor(data, dtype=torch.long), torch.tensor(labels, dtype=torch.long)
+        return (
+            torch.tensor(data, dtype=torch.long),
+            torch.tensor(labels, dtype=torch.long),
+            torch.tensor(prefix_mask, dtype=torch.bool),
+            torch.tensor(suffix_mask, dtype=torch.bool),
+        )
+
+
