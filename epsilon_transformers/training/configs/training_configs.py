@@ -56,6 +56,12 @@ class PersistanceConfig(Config):
         save_dir = str(self.collection_location)
         return Persister(save_dir=save_dir) 
 
+@dataclass
+class TruncationConfig:
+    enabled: bool = False
+    keep_lengths: Optional[list[int]] = None
+
+
 
 class ProcessDatasetConfig(Config):
     """Dataset configuration."""
@@ -69,6 +75,8 @@ class ProcessDatasetConfig(Config):
     gpu_generation:bool=True
     chunk_size: int=2048
     start_state_idx: Optional[int]=None
+    truncation: Optional[TruncationConfig] = None
+
 
     @field_validator("batch_size")
     @classmethod
@@ -77,7 +85,7 @@ class ProcessDatasetConfig(Config):
         if v <= 0:
             raise ValueError("batch_size must be > 0")
         return v
-
+ 
     def to_dataloader(self, sequence_length: int, train: bool,device:Optional[torch.device]=None,suffix_eval: bool = False) -> DataLoader:
         """Create dataloader from config."""
         # Use sequence_length from config by default
@@ -103,6 +111,20 @@ class ProcessDatasetConfig(Config):
         else:
             current_batch_size=self.test_batch_size if self.test_batch_size is not None else self.batch_size 
             current_chunk_size=self.test_batch_size if self.test_batch_size is not None else self.chunk_size
+        
+        enable_truncation = False
+        truncation_choices = None
+
+        if suffix_eval:
+            enable_truncation = True
+            truncation_choices = (
+                self.truncation.keep_lengths
+                if self.truncation and self.truncation.keep_lengths
+                else [seq_len, seq_len - 1, seq_len - 2]
+            )
+        elif self.truncation and self.truncation.enabled:
+            enable_truncation = True
+            truncation_choices = self.truncation.keep_lengths
 
         dataset = ProcessDataset(
             process_name=self.process,
@@ -111,17 +133,13 @@ class ProcessDatasetConfig(Config):
             device=device if self.gpu_generation else torch.device("cpu"),
             chunk_size=self.chunk_size,
             num_samples=num_samples,
-            start_state_idx=self.start_state_idx
+            start_state_idx=self.start_state_idx,
         )
-        
-        if suffix_eval:
-            dataset.enable_truncation = True
-            dataset.truncation_choices = [
-                seq_len,
-                seq_len - 1,
-                seq_len - 2,
-            ]
 
+        dataset.enable_truncation = enable_truncation
+        dataset.truncation_choices = truncation_choices
+        
+        
         print(f"[Info] Created {'train' if train else 'test'} dataloader with {num_samples} samples, "
           f"sequence_length={seq_len}, batch_size={current_batch_size}, "
           f"chunk_size={current_chunk_size}, "
