@@ -312,7 +312,10 @@ def _evaluate_log_and_persist(
     log.reset()
 
 
-def evaluate_suffix_only(model, dataloader, device):
+def evaluate_suffix_only(model, dataloader, device,suffix_eval: bool = False) -> Optional[float]:
+    
+    if not suffix_eval:
+        return None
     model.eval()
     criterion = nn.CrossEntropyLoss(reduction="none")
 
@@ -366,6 +369,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     
     # Initialize model and optimizer
     model = config.model.to_hooked_transformer(device=device, seed=config.seed)
+    model.cfg.pad_token_id = config.model.pad_token_id
     optimizer = config.optimizer.from_model(model=model, device=device)
 
     tokens_trained_so_far = 0
@@ -407,18 +411,6 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     if simplex_analyzer is not None:
         _,__=simplex_analyzer.setup_from_tree(process=val_process,depth=model.cfg.n_ctx + 1,num_samples=num_samples,start_state_idx=config.dataset.start_state_idx)
 
-    # # for simplex mse analysis
-    # mixed_state_tree = val_process.derive_mixed_state_presentation(depth=model.cfg.n_ctx + 1)
-    # MSP_transition_matrix = mixed_state_tree.build_msp_transition_matrix()
-    # tree_paths, tree_beliefs = mixed_state_tree.paths_and_belief_states
-    # msp_beliefs = [tuple(round(b, 5) for b in belief) for belief in tree_beliefs]
-    # msp_belief_index = {b: i for i, b in enumerate(set(msp_beliefs))}
-    # ground_truth_simplex = _project_to_simplex(np.array(list(msp_belief_index.keys())))
-    # transformer_inputs=[x for x in tree_paths if len(x)==model.cfg.n_ctx]
-    # transformer_inputs_tensor=torch.tensor(transformer_inputs,device=device)
-    # transformer_input_beliefs, transformer_input_belief_indices = get_beliefs_for_transformer_inputs(transformer_inputs, msp_belief_index,tree_paths, tree_beliefs)
-
-
     last_action_batch_tokens=0#for ngram analyzer
 
     model.train()
@@ -443,9 +435,12 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         suffix_mask = suffix_mask.to(device)
         if ngram_analyzer is not None:
             train_sequences_since_last_action.append(input_data)
-        PAD_TOKEN = model.cfg.pad_token_id
-        truncated_input = input_data.clone()
-        truncated_input[suffix_mask] = PAD_TOKEN
+        if model.cfg.pad_token_id is not None:
+            PAD_TOKEN = model.cfg.pad_token_id
+            truncated_input = input_data.clone()
+            truncated_input[suffix_mask] = PAD_TOKEN
+        else:
+            truncated_input = input_data    
 
         logits = model(truncated_input, return_type="logits")
         criterion=nn.CrossEntropyLoss(reduction="none")
@@ -556,13 +551,14 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     suffix_loader = config.dataset.to_dataloader(
         sequence_length=model.cfg.n_ctx,
         train=False,
-        suffix_eval=True,
+        suffix_eval=False,
     )
 
-    suffix_ce = evaluate_suffix_only(model, suffix_loader, device)
-    print(f"[SUFFIX-ONLY CE] {suffix_ce:.4f}")
+    suffix_ce = evaluate_suffix_only(model, suffix_loader, device,suffix_eval=False)
     
-    wandb.log({"test/suffix_only_ce": suffix_ce})
+    if suffix_ce is not None:
+        print(f"Suffix Only Cross-Entropy: {suffix_ce:.4f}") 
+        wandb.log({"test/suffix_only_ce": suffix_ce})
 
     
     # Close logger

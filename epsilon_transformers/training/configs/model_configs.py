@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 from transformer_lens import HookedTransformer, HookedTransformerConfig  # type: ignore
 
@@ -12,6 +13,7 @@ class RawModelConfig(Config):
     n_head: int
     d_mlp: int
     n_layers: int
+    pad_token_id: Optional[int] = None
 
     def to_hooked_transformer(
         self, device: torch.device, seed: int | None = None
