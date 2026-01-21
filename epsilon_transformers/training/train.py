@@ -170,9 +170,12 @@ def _compute_validation_metrics(
             input_data,target_data = input_data.to(device), target_data.to(device)
             prefix_mask = prefix_mask.to(device)
             suffix_mask = suffix_mask.to(device)
-            PAD_TOKEN = model.cfg.pad_token_id
-            truncated_input = input_data.clone()
-            truncated_input[suffix_mask] = PAD_TOKEN
+            if model.cfg.pad_token_id is not None:
+                PAD_TOKEN = model.cfg.pad_token_id
+                truncated_input = input_data.clone()
+                truncated_input[suffix_mask] = PAD_TOKEN
+            else:
+                truncated_input = input_data    
             logits=model(truncated_input, return_type="logits")
             loss=criterion(logits.view(-1,logits.size(-1)),target_data.view(-1))
             loss=loss.view(input_data.shape[0],input_data.shape[1])
@@ -202,7 +205,7 @@ def _compute_validation_metrics(
         t_simplex_start=time.time()
         # print("hi")
         try:
-            _,_,mse = simplex_analyzer.compute_simplex_mse(model)
+            _,_,_,mse = simplex_analyzer.compute_simplex_mse(model)
             log.update_metrics("test", metric_name="simplex_mse", loss=mse)
             print(f"[eval] Simplex MSE: {mse:.6f} ({time.time() - t_simplex_start:.3f}s)")
         except Exception as e:
@@ -409,7 +412,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     if hasattr(config.analysis, 'simplex_analysis'):
         num_samples=config.analysis.simplex_analysis.num_samples_for_probe
     if simplex_analyzer is not None:
-        _,__=simplex_analyzer.setup_from_tree(process=val_process,depth=model.cfg.n_ctx + 1,num_samples=num_samples,start_state_idx=config.dataset.start_state_idx)
+        simplex_analyzer.setup_from_tree(process=val_process,depth=model.cfg.n_ctx + 1,num_samples=num_samples,start_state_idx=config.dataset.start_state_idx)
 
     last_action_batch_tokens=0#for ngram analyzer
 

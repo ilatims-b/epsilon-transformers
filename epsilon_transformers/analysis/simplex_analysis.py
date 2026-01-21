@@ -1,76 +1,3 @@
-# import torch
-# import torch.nn.functional as F
-# from typing import Dict, Tuple, Optional
-# import numpy as np
-# from sklearn.linear_model import LinearRegression
-
-# from epsilon_transformers.visualization.plots import _project_to_simplex
-
-# class SimplexAnalyzer:
-#     """Calculates the MSE between model's simplex and ground truth simplex
-#     For getting simplex, we use _project_to_simplex from visualization.plots
-#     """
-#     def __init__(self, vocab_size: int, seq_len: Optional[int] = None,hook:str='blocks.0.hook_resid_post', transformer_input_beliefs=None, transformer_inputs=None, model=None):
-#         self.vocab_size = vocab_size
-#         self.seq_len = seq_len
-#         self.hook=hook
-#         self.transformer_input_beliefs=transformer_input_beliefs
-#         self.transformer_inputs=transformer_inputs
-#         self.model=model
-
-#     def run_activation_to_beliefs_regression(self, activations, ground_truth_beliefs):
-#         # make sure the first two dimensions are the same
-#         assert activations.shape[0] == ground_truth_beliefs.shape[0]
-#         assert activations.shape[1] == ground_truth_beliefs.shape[1]
-#         # flatten the activations
-#         batch_size, n_ctx, d_model = activations.shape
-#         belief_dim = ground_truth_beliefs.shape[-1]
-#         activations_flattened = activations.view(-1, d_model) # [batch * n_ctx, d_model]
-#         ground_truth_beliefs_flattened = ground_truth_beliefs.view(-1, belief_dim) # [batch * n_ctx, belief_dim]
-#         # run the regression
-#         regression = LinearRegression()
-#         regression.fit(activations_flattened, ground_truth_beliefs_flattened)
-#         # get the belief predictions
-#         belief_predictions = regression.predict(activations_flattened) # [batch * n_ctx, belief_dim]
-#         belief_predictions = belief_predictions.reshape(batch_size, n_ctx, belief_dim)
-
-#         return regression, belief_predictions
-#     def compute_ground_truth_simplex(self,):
-#         transformer_input_belief_flattened=self.transformer_input_beliefs.reshape(-1,3)
-#         true_x, true_y = _project_to_simplex(transformer_input_belief_flattened)
-#         ground_truth_simplex_coords = np.stack([true_x, true_y], axis=1)
-#         return ground_truth_simplex_coords
-    
-#     def compute_model_simplex_from_activations(self,):
-#         _, activations= self.model.run_with_cache(self.transformer_inputs, names_filter=lambda x: self.hook in x)
-#         acts=activations[f'{self.hook}']  # [batch, n_ctx, d_model]
-#         _, belief_predictions = self.run_activation_to_beliefs_regression(acts, self.transformer_input_beliefs)
-#         belief_predictions_flattened=belief_predictions.reshape(-1,3)
-#         model_x, model_y = _project_to_simplex(belief_predictions_flattened)
-#         model_simplex_coords = np.stack([model_x, model_y], axis=1)
-#         return  model_simplex_coords
-    
-#     def compute_simplex_mse(self, model_simplex_coords, ground_truth_simplex_coords):
-#          # Squared Euclidean distance per point: (x1-x2)^2 + (y1-y2)^2
-#         squared_diffs = (model_simplex_coords - ground_truth_simplex_coords) ** 2
-#         euclidean_squared = np.sum(squared_diffs, axis=1)
-#         mse_loss = np.mean(euclidean_squared)
-#         return mse_loss
-    
-# def compute_simplex_mse_for_model(model, transformer_inputs, transformer_input_beliefs, hook='resid_post'):
-#     analyzer = SimplexAnalyzer(
-#         vocab_size=model.cfg.vocab_size,
-#         seq_len=model.cfg.n_ctx,
-#         hook=hook,
-#         transformer_input_beliefs=transformer_input_beliefs,
-#         transformer_inputs=transformer_inputs,
-#         model=model
-#     )
-#     ground_truth_simplex_coords = analyzer.compute_ground_truth_simplex()
-#     model_simplex_coords = analyzer.compute_model_simplex_from_activations()
-#     mse_loss = analyzer.compute_simplex_mse(model_simplex_coords, ground_truth_simplex_coords)
-#     return mse_loss
-
 import torch
 import torch.nn.functional as F
 from typing import Dict, Tuple, Optional
@@ -116,7 +43,7 @@ class SimplexAnalyzer:
 
         true_x, true_y = _project_to_simplex(self.test_beliefs_flat)
         self.ground_truth_simplex_coords = np.stack([true_x, true_y], axis=1)
-        return beliefs_tensor, self.ground_truth_simplex_coords
+        return None
 
     def compute_simplex_mse(self,model) ->float:
         """
@@ -155,7 +82,7 @@ class SimplexAnalyzer:
         squared_diffs = (true_2d - pred_2d) ** 2
         mse = np.mean(np.sum(squared_diffs, axis=1))
         
-        return pred_x, pred_y, float(mse)    
+        return beliefs_pred_flat, pred_x, pred_y, float(mse)    
         
     def _compute_beliefs_for_batch(self, sequences, process,start_state_idx: Optional[int]=None):
         """Vectorized HMM Filter handling both standard and normalized transitions."""
@@ -286,7 +213,7 @@ class SimplexAnalyzer:
             #  Add baseline pi
             belief_t = pi.unsqueeze(0) + sum_terms
             # DIAGNOSTIC: Check validity
-            print(f"t={t}: belief_t sum={belief_t[0].sum().item():.6f}, min={belief_t.min().item():.6f}, max={belief_t.max().item():.6f}")
+            # print(f"t={t}: belief_t sum={belief_t[0].sum().item():.6f}, min={belief_t.min().item():.6f}, max={belief_t.max().item():.6f}")
             constrained_beliefs.append(belief_t)
             
         return torch.stack(constrained_beliefs, dim=1)
