@@ -128,7 +128,7 @@ class Process(ABC):
             )
         return self._gpu_steady_state
                
-    #added
+
     def generate_batch_gpu(
         self,
         batch_size: int,
@@ -196,7 +196,74 @@ class Process(ABC):
             current_states = next_state
         
         return emissions
-     #added  
+    
+    def generate_batch_gpu_with_beliefs(
+        self,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+        start_state_idx: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            emissions: (batch_size, seq_len) - Discrete observations
+            true_states: (batch_size, seq_len) - Ground truth state indices
+            beliefs: (batch_size, seq_len, num_states) - Observer's belief distributions
+        """
+        self._ensure_gpu_tensors(device)
+        T = self._gpu_transition_matrix  # (vocab_len, num_states, num_states)
+        
+        # 1. Initialize Ground Truth States
+        if start_state_idx is not None:
+            current_states = torch.full((batch_size,), start_state_idx, dtype=torch.long, device=device)
+            # Initial belief is certain
+            current_belief = torch.zeros((batch_size, self.num_states), device=device)
+            current_belief[:, start_state_idx] = 1.0
+        else:
+            steady_state = self._get_gpu_steady_state(device)
+            current_states = torch.multinomial(
+                steady_state.unsqueeze(0).expand(batch_size, -1), 
+                num_samples=1
+            ).squeeze(-1)
+            # Initial belief starts at steady state
+            current_belief = steady_state.unsqueeze(0).expand(batch_size, -1)
+
+        emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        true_states = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        beliefs = torch.empty(batch_size, seq_len, self.num_states, dtype=torch.float32, device=device)
+
+        for t in range(seq_len):
+            # --- A. Generate Next Step (Ground Truth) ---
+            trans_probs = T[:, current_states, :].permute(1, 0, 2) # (batch_size, vocab_len, num_states)
+            flat_probs = trans_probs.reshape(batch_size, -1)
+            
+            joint_idx = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
+            
+            emission = joint_idx // self.num_states
+            next_state = joint_idx % self.num_states
+            
+            # --- B. Update Observer's Belief (Filtering) ---
+            # The observer sees 'emission' and updates current_belief
+            # T_emit shape: (batch_size, num_states, num_states)
+            T_emit = T[emission] 
+            
+            # Belief Update: b_{t} = (b_{t-1} @ T_emit) / Normalization
+            # [B, 1, S] @ [B, S, S] -> [B, 1, S] -> [B, S]
+            next_belief = torch.bmm(current_belief.unsqueeze(1), T_emit).squeeze(1)
+            
+            # Normalize
+            denom = next_belief.sum(dim=1, keepdim=True)
+            current_belief = next_belief / torch.where(denom < 1e-12, torch.ones_like(denom), denom)
+
+            # --- C. Store results ---
+            emissions[:, t] = emission
+            true_states[:, t] = next_state
+            beliefs[:, t] = current_belief
+            
+            current_states = next_state
+        
+        return emissions, true_states, beliefs
+
     def _sample_emission(self, current_state_idx: Optional[int] = None) -> int:
         if current_state_idx is None:
             current_state_idx = np.random.choice(
@@ -209,8 +276,7 @@ class Process(ABC):
 
         p = self.transition_matrix[:, current_state_idx, :].sum(axis=1)
         emission = np.random.choice(self.vocab_len, p=p)
-        return emission
-    #added
+
     def yield_emissions(
         self, sequence_len: int, current_state_idx: int | None = None
     ) -> Iterator[int]:
@@ -227,7 +293,7 @@ class Process(ABC):
             )
             yield emission
             current_state_idx = next_state_idx
-    #added
+
     def _sample_emission_and_next_state(
         self, current_state_idx: int
     ) -> tuple[int, int]:
@@ -238,13 +304,13 @@ class Process(ABC):
         emission = emission_next_state_idx // self.num_states
         next_state_idx = emission_next_state_idx % self.num_states
         return emission, next_state_idx
-    #added
+
     def yield_emission_histories(
         self, sequence_len: int, num_sequences: int, start_state_idx: Optional[int]=None
     ) -> Iterator[list[int]]:
         for _ in range(num_sequences):
             yield [x for x in self.yield_emissions(sequence_len=sequence_len, current_state_idx=start_state_idx)]
-    #added
+
     def generate_process_history(
         self, total_length: int, current_state_idx: int | None = None
     ) -> ProcessHistory:
@@ -326,7 +392,6 @@ class Process(ABC):
             root_node=tree_root, process=self.name, nodes=nodes, depth=depth
         )
 
-#added
 def _compute_emission_probabilities(
     hmm: Process, state_prob_vector: Float[np.ndarray, "num_states"]
 ) -> Float[np.ndarray, "vocab_len"]:
@@ -338,7 +403,6 @@ def _compute_emission_probabilities(
     emission_probs /= emission_probs.sum()
     return emission_probs
 
-#added
 def _compute_next_distribution(
     epsilon_machine: Float[np.ndarray, "vocab_len num_states num_states"],
     current_state_prob_vector: Float[np.ndarray, "num_states"],

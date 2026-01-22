@@ -160,9 +160,9 @@ class SimplexAnalyzer:
              T_norm = T_labeled / safe_row_sums
 
         # DIAGNOSTIC: Check if matrices are valid
-        print(f"Pi sum: {pi.sum().item():.6f}")
-        print(f"T_std row sums: {T_std.sum(dim=1)}")
-        print(f"T_norm row sums: {T_norm.sum(dim=2)}")     
+        # print(f"Pi sum: {pi.sum().item():.6f}")
+        # print(f"T_std row sums: {T_std.sum(dim=1)}")
+        # print(f"T_norm row sums: {T_norm.sum(dim=2)}")     
             # 2. Precompute powers of T: T^0, T^1, ..., T^{L-1}
         T_powers = [torch.eye(num_states, device=device)]
         curr_T = T_std
