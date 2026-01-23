@@ -384,8 +384,11 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
 
             model.load_state_dict(checkpoint["model_state_dict"])
 
-            if checkpoint.get("optimizer_state_dict") is not None:
-                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            optimizer_state = checkpoint["metadata"].get("optimizer_state_dict")
+
+            if optimizer_state is None:
+                raise RuntimeError("Optimizer state missing in checkpoint metadata")
+            optimizer.load_state_dict(optimizer_state)
 
             tokens_trained_so_far = checkpoint.get("tokens_trained", 0)
             print(f"[Resume] Resumed from {tokens_trained_so_far} tokens")
