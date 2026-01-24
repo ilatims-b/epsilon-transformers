@@ -3,6 +3,7 @@ import pathlib
 import random
 import numpy as np
 import time
+from pyparsing import Opt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -203,7 +204,6 @@ def _compute_validation_metrics(
         print(f"[eval] model forward time: {t_model_fwd:.3f} seconds over {num_batches} batches")    
     if simplex_analyzer is not None:
         t_simplex_start=time.time()
-        # print("hi")
         try:
             _,_,_,mse = simplex_analyzer.compute_simplex_mse(model)
             log.update_metrics("test", metric_name="simplex_mse", loss=mse)
@@ -268,27 +268,30 @@ def _evaluate_log_and_persist(
     simplex_analyzer: Optional[SimplexAnalyzer] = None,
     val_process: Optional[object] = None,
     return_per_position: bool = True,
-    minimum_cross_entropy: Optional[torch.Tensor]=None
+    minimum_cross_entropy: Optional[torch.Tensor]=None,
+    do_eval: bool = True
 
 ):
     """Evaluate model, log metrics, and persist checkpoint."""
-    eval_dataloader = dataset_config.to_dataloader(
-        sequence_length=model.cfg.n_ctx, train=False
-    )
-    with torch.no_grad():
-        _compute_validation_metrics(
-            model=model,
-            eval_dataloader=eval_dataloader,
-            device=device,
-            log=log,
-            ngram_analyzer=ngram_analyzer,
-            markov_analyzer=markov_analyzer,
-            simplex_analyzer=simplex_analyzer,
-            val_process=val_process,
-            return_per_position=return_per_position,
-            minimum_cross_entropy=minimum_cross_entropy,
-            start_state_idx=dataset_config.start_state_idx
+    if do_eval:
+        eval_dataloader = dataset_config.to_dataloader(
+            sequence_length=model.cfg.n_ctx, train=False
         )
+        with torch.no_grad():
+            _compute_validation_metrics(
+                model=model,
+                eval_dataloader=eval_dataloader,
+                device=device,
+                log=log,
+                ngram_analyzer=ngram_analyzer,
+                markov_analyzer=markov_analyzer,
+                simplex_analyzer=simplex_analyzer,
+                val_process=val_process,
+                return_per_position=return_per_position,
+                minimum_cross_entropy=minimum_cross_entropy,
+                start_state_idx=dataset_config.start_state_idx
+                
+            )
     aggregated_metrics=log.get_aggregated_metrics()
     if verbose:
         train_loss = aggregated_metrics.get("train", {}).get("loss", 0.0)
@@ -303,6 +306,7 @@ def _evaluate_log_and_persist(
         
     # 4. Persist to WandB and Save Checkpoint
     log.persist() # Logs averages to WandB
+    
     persister.save_model(
     model,
     tokens_trained,
@@ -518,7 +522,9 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
                 simplex_analyzer=simplex_analyzer,
                 val_process=val_process,
                 return_per_position=return_per_position,
-                minimum_cross_entropy=minimum_cross_entropy)
+                minimum_cross_entropy=minimum_cross_entropy,
+                do_eval=getattr(config,'do_eval',True)
+            )
             t1 = time.time()
             #print(f"[TIMING] Full evaluation step took {t1 - t0:.3f} seconds")
             model.train()

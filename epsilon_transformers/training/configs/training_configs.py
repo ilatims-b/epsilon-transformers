@@ -274,7 +274,7 @@ class TrainConfig(Config):
     seed: int
     verbose: bool
     truncation: Optional[TruncationConfig] = None
-    
+    do_eval: bool=True
     
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
 
