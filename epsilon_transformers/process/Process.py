@@ -37,19 +37,37 @@ class Process(ABC):
     state_names_dict: dict[str, int]
     vocab_len: int
     num_states: int
+    steady_state_vector: Float[np.ndarray, "num_states"]
     # GPU tensors (lazily initialized)
     _gpu_transition_matrix: Optional[torch.Tensor] = None
     _gpu_steady_state: Optional[torch.Tensor] = None
     _gpu_device: Optional[torch.device] = None
 
-    @property
-    def steady_state_vector(self) -> Float[np.ndarray, "num_states"]:
+    # @property
+    # def steady_state_vector(self) -> Float[np.ndarray, "num_states"]:
+    #     state_transition_matrix = np.sum(self.transition_matrix, axis=0)
+
+    #     eigenvalues, eigenvectors = np.linalg.eig(state_transition_matrix.T)
+    #     steady_state_vector = eigenvectors[:, np.isclose(eigenvalues, 1)].real
+    #     normalized_steady_state_vector = steady_state_vector / steady_state_vector.sum()
+    #     out: np.ndarray = normalized_steady_state_vector[:, 0]
+
+    #     assert out.ndim == 1
+    #     assert len(out) == self.num_states
+    #     return out
+    def _compute_steady_state(self) -> Float[np.ndarray, "num_states"]:
+        """Calculates steady state vector from transition matrix."""
         state_transition_matrix = np.sum(self.transition_matrix, axis=0)
 
         eigenvalues, eigenvectors = np.linalg.eig(state_transition_matrix.T)
         steady_state_vector = eigenvectors[:, np.isclose(eigenvalues, 1)].real
+        
+        # Handle case where multiple 1 eigenvalues might exist or normalization needed
+        if steady_state_vector.shape[1] > 0:
+            steady_state_vector = steady_state_vector[:, 0]
+            
         normalized_steady_state_vector = steady_state_vector / steady_state_vector.sum()
-        out: np.ndarray = normalized_steady_state_vector[:, 0]
+        out: np.ndarray = normalized_steady_state_vector
 
         assert out.ndim == 1
         assert len(out) == self.num_states
@@ -67,7 +85,7 @@ class Process(ABC):
 
     def __init__(self):
         self.transition_matrix, self.state_names_dict = self._create_hmm()
-
+        
         if (
             len(self.transition_matrix.shape) != 3
             or self.transition_matrix.shape[1] != self.transition_matrix.shape[2]
@@ -85,10 +103,12 @@ class Process(ABC):
 
         self.vocab_len = self.transition_matrix.shape[0]
         self.num_states = self.transition_matrix.shape[1]
+        self.steady_state_vector = self._compute_steady_state()
         # Reset GPU cache
         self._gpu_transition_matrix = None
         self._gpu_steady_state = None
         self._gpu_device = None
+ 
 
     @abstractmethod
     def _create_hmm(
@@ -165,12 +185,15 @@ class Process(ABC):
             )
         else:
             # Sample initial states from steady state distribution
-            steady_state=self._get_gpu_steady_state(device)
-            # steady_state = self._gpu_steady_state  # (num_states,)
+            steady_state = self._get_gpu_steady_state(device)  # (num_states,)
+            if steady_state.ndim==1:
+                probs=steady_state.unsqueeze(0).expand(batch_size, -1)  # (batch_size, num_states)
+            else:
+                probs=steady_state    
+            
             current_states = torch.multinomial(
-                steady_state.unsqueeze(0).expand(batch_size, -1), 
-                num_samples=1
-            ).squeeze(-1)  # (batch_size,)
+                    probs, 
+                    num_samples=1).squeeze(-1)  # (batch_size,)
 
         
         emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)

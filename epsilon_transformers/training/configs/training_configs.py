@@ -75,6 +75,7 @@ class ProcessDatasetConfig(Config):
     gpu_generation:bool=True
     chunk_size: int=2048
     start_state_idx: Optional[int]=None
+    steady_state: Optional[list[float]]=None
     truncation: Optional[TruncationConfig] = None
 
 
@@ -134,6 +135,7 @@ class ProcessDatasetConfig(Config):
             chunk_size=self.chunk_size,
             num_samples=num_samples,
             start_state_idx=self.start_state_idx,
+            steady_state=self.steady_state
         )
 
         dataset.enable_truncation = enable_truncation

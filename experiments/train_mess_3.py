@@ -16,14 +16,14 @@ from epsilon_transformers.training.configs.training_configs import (
     AnalysisConfig,
 )
 from epsilon_transformers.training.train import train_model
-
+import torch
 
 # ============================================================================
 # Model Configuration
 # ============================================================================
 
 model_config = RawModelConfig(
-    d_vocab=3,
+    d_vocab=6,
     d_model=128,
     n_ctx=10,
     d_head=16,
@@ -49,14 +49,15 @@ optimizer_config = OptimizerConfig(
 # ============================================================================
 
 dataset_config = ProcessDatasetConfig(
-    process='Mess3',
-    process_params={'x': 0.05, 'a': 0.85},
+    process='Mixed_Mess3',
+    process_params={'x1': 0.15, 'a1': 0.6, 'x2': 0.15, 'a2': 0.75},
     batch_size=128,
     num_tokens=150000,
     sequence_length=10,
     test_split=0.0625,
     chunk_size=2048,
     test_batch_size=1250,
+    steady_state=[1/6, 1/6, 1/6, 1/6, 1/6, 1/6]
 )
 
 
@@ -79,7 +80,7 @@ logging_config = LoggingConfig(
     project_name="epstrans",
     wandb=True,
     # NEW: Option 1 - Pass API key directly (recommended for testing)
-    wandb_api_key="",
+    wandb_api_key="9df77e7cbad36f3323af2ea208aa4027a970df97",
     run_name="trial",
     relative_loss=False
     # OR use environment variable: export WANDB_API_KEY="YOUR_KEY"
@@ -104,17 +105,17 @@ logging_config = LoggingConfig(
 # )
 analysis_config = AnalysisConfig(
     ngram_analysis=NGramAnalysisConfig(
-        enabled=True,
+        enabled=False,
         n_values=[1, 2, 3],
         return_per_position=False,
     ),
     markov_kl_analysis=MarkovKLAnalysisConfig(
-        enabled=True,
+        enabled=False,
         return_per_position=False,
     ),
     # NEW: Simplex Analysis Configuration
     simplex_analysis=SimplexAnalysisConfig(
-        enabled=True,
+        enabled=False,
         hook_point="blocks.0.hook_resid_post", # Adjust layer index if n_layers changes
         num_samples_for_probe=None
     )
@@ -131,7 +132,8 @@ mock_config = TrainConfig(
     logging=logging_config,
     analysis=analysis_config,
     verbose=True,
-    seed=42
+    seed=42,
+    do_eval=False
 )
 
 

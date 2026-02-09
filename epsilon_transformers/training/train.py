@@ -446,6 +446,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         if ngram_analyzer is not None:
             train_sequences_since_last_action.append(input_data)
         if model.cfg.pad_token_id is not None:
+            print(f"[Training] Applying padding token for suffix masking")
             PAD_TOKEN = model.cfg.pad_token_id
             truncated_input = input_data.clone()
             truncated_input[suffix_mask] = PAD_TOKEN
@@ -566,7 +567,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         suffix_eval=True,
     )
 
-    suffix_ce = evaluate_suffix_only(model, suffix_loader, device,suffix_eval=True)
+    suffix_ce = evaluate_suffix_only(model, suffix_loader, device,suffix_eval=False)
     
     if suffix_ce is not None:
         print(f"Suffix Only Cross-Entropy: {suffix_ce:.4f}") 

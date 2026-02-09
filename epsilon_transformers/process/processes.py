@@ -114,7 +114,44 @@ class Trun_Mess3(Process):
 
         return T,state_names   
 
+class Mixed_Mess3(Process):
+    def __init__(self, x1=0.15, a1=0.6,x2=0.15,a2=0.6):
+        self.name = "mixed_mess3"
+        self.x1 = x1
+        self.a1 = a1
+        self.x2 = x2
+        self.a2 = a2
+        super().__init__()
 
+    def _create_hmm(self):
+        T = np.zeros((6, 6, 6))
+        state_names = {"A": 0, "B": 1, "C": 2,"D": 3,"E": 4,"F": 5}
+        b1 = (1 - self.a1) / 2
+        y1 = 1 - 2 * self.x1
+        b2 = (1 - self.a2) / 2
+        y2 = 1 - 2 * self.x2
+
+        ay1 = self.a1 * y1
+        bx1 = b1 * self.x1
+        by1 = b1 * y1
+        ax1 = self.a1 * self.x1
+        ay2 = self.a2 * y2
+        bx2 = b2 * self.x2
+        by2 = b2 * y2
+        ax2 = self.a2 * self.x2
+
+        T[0, :, :] = [[ay1, bx1, bx1,0,0,0], [ax1, by1, bx1,0,0,0], [ax1, bx1, by1,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0]]
+        T[1, :, :] = [[by1, ax1, bx1,0,0,0], [bx1, ay1, bx1,0,0,0], [bx1, ax1, by1,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0]]
+        T[2, :, :] = [[by1, bx1, ax1,0,0,0], [bx1, by1, ax1,0,0,0], [bx1, bx1, ay1,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0]] 
+        T[3, :, :] = [[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,ay2, bx2, bx2], [0,0,0,ax2, by2, bx2], [0,0,0,ax2, bx2, by2]]
+        T[4, :, :] = [[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,by2, ax2, bx2], [0,0,0,bx2, ay2, bx2], [0,0,0,bx2, ax2, by2]]
+        T[5, :, :] = [[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,by2, bx2, ax2], [0,0,0,bx2, by2, ax2], [0,0,0,bx2, bx2, ay2]]
+        return T,state_names
+
+
+        
+
+        return T,state_names
 class Linear_Mess3(NormTransitionMixin,Process):
     def __init__(self, x=0.15, a=0.6):
         self.name = "linear_mess3"

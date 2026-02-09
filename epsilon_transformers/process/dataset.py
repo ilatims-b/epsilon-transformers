@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from typing import Iterator, Optional
 from jaxtyping import Float
 from torch.utils.data import IterableDataset
@@ -22,6 +23,7 @@ class ProcessDataset(IterableDataset):
     device:torch.device
     chunk_size: int
     start_state_idx:Optional[int]=None
+    steady_state:Optional[list[float]]=None
     
 
     samples:Optional[Iterator[int]]=None #for cpu fallback
@@ -35,6 +37,7 @@ class ProcessDataset(IterableDataset):
         device: Optional[torch.device] = None,
         chunk_size: int = 2048,
         start_state_idx: Optional[int] = None,
+        steady_state: Optional[list[float]] = None,
         
     ):
         super().__init__()
@@ -44,9 +47,17 @@ class ProcessDataset(IterableDataset):
             raise ValueError(
                 f"{process_name} is not a recognized process. It must be one of the following {PROCESS_REGISTRY.keys()}"
             )
-        process: Process = process_class(**process_params)
-
-        self.samples = process.yield_emissions(
+        self.process: Process = process_class(**process_params)
+        if steady_state is not None:
+            if len(steady_state) != self.process.num_states:
+                raise ValueError(
+                    f"Provided steady_state length ({len(steady_state)}) does not match process num_states ({self.process.num_states})"
+                )
+            # Update the instance variable on the process
+            self.process.steady_state_vector = np.array(steady_state, dtype=float)
+            # Invalidate GPU cache so the new vector is used
+            self.process._gpu_steady_state = None
+        self.samples = self.process.yield_emissions(
             sequence_len=num_samples * (sequence_length + 1),current_state_idx=start_state_idx
         )
         self.process: Process = process_class(**process_params)
@@ -54,6 +65,7 @@ class ProcessDataset(IterableDataset):
         self.num_samples = num_samples
         self.chunk_size = chunk_size
         self.start_state_idx = start_state_idx
+        self.steady_state = steady_state
         self.enable_truncation = False
         self.truncation_choices = None
         if device is None:
@@ -92,7 +104,8 @@ class ProcessDataset(IterableDataset):
                 batch_size=current_chunk_size,
                 seq_len=self.sequence_length + 1,
                 device=self.device,
-                start_state_idx=self.start_state_idx
+                start_state_idx=self.start_state_idx,
+                
             )
             
             # Yield samples one by one
@@ -130,6 +143,7 @@ class ProcessDatasetCPU(IterableDataset):
     sequence_length: int
     num_samples: int
     start_state_idx:Optional[int]=None
+    steady_state: Optional[list[float]]=None
 
     def __init__(
         self,
@@ -138,6 +152,7 @@ class ProcessDatasetCPU(IterableDataset):
         sequence_length: int,
         num_samples: int,
         start_state_idx: Optional[int] = None,
+        steady_state: Optional[list[float]] = None,
     ):
         super().__init__()
         process_class = PROCESS_REGISTRY.get(process_name, None)
@@ -146,12 +161,15 @@ class ProcessDatasetCPU(IterableDataset):
                 f"{process_name} is not a recognized process. It must be one of the following {PROCESS_REGISTRY.keys()}"
             )
         process: Process = process_class(**process_params)
+        if steady_state is not None:
+            self.process.steady_state_vector = np.array(steady_state, dtype=float)
         self.samples = process.yield_emissions(
             sequence_len=num_samples * (sequence_length + 1),current_state_idx=start_state_idx
         )
         self.sequence_length = sequence_length
         self.num_samples = num_samples
         self.start_state_idx = start_state_idx
+        self.steady_state = steady_state
 
     def __len__(self):
         return self.num_samples
