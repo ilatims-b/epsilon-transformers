@@ -563,10 +563,10 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     suffix_loader = config.dataset.to_dataloader(
         sequence_length=model.cfg.n_ctx,
         train=False,
-        suffix_eval=False,
+        suffix_eval=True,
     )
 
-    suffix_ce = evaluate_suffix_only(model, suffix_loader, device,suffix_eval=False)
+    suffix_ce = evaluate_suffix_only(model, suffix_loader, device,suffix_eval=True)
     
     if suffix_ce is not None:
         print(f"Suffix Only Cross-Entropy: {suffix_ce:.4f}") 

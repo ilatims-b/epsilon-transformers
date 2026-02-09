@@ -115,11 +115,11 @@ class ProcessDataset(IterableDataset):
 
                     suffix_mask = ~prefix_mask
 
-                    PAD_TOKEN = 0  
-                    truncated_input = input_seq.clone()
-                    if keep_len < self.sequence_length:
-                        truncated_input[keep_len:] = PAD_TOKEN
-                    yield truncated_input,target_seq, prefix_mask, suffix_mask      
+                    # PAD_TOKEN = 0  
+                    # truncated_input = input_seq.clone()
+                    # if keep_len < self.sequence_length:
+                    #     truncated_input[keep_len:] = PAD_TOKEN
+                    yield input_seq,target_seq,prefix_mask, suffix_mask      
             samples_yielded += current_chunk_size
 
 class ProcessDatasetCPU(IterableDataset):
