@@ -27,18 +27,10 @@ class MarkovKLAnalyzer:
     def compute_ground_truth_distributions(self, 
                                           sequences: torch.Tensor, 
                                           process, 
-                                          start_state_idx: Optional[int] = None) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+                                          start_state_idx: Optional[int] = None) -> torch.Tensor:
         """
-        Computes the Ground Truth probability distributions for every step in the sequence.
-        
-        Args:
-            sequences: [Batch, Seq_Len] tensor of token indices.
-            process: The Process or MixedProcess object.
-            start_state_idx: Optional starting state.
-            
-        Returns:
-            all_gt_dists: [Batch, Seq_Len, Vocab_Size] Tensor of GT probabilities.
-            all_kl_values: (Empty list in this function, kept for signature compatibility if needed)
+        Computes the Ground Truth probability distributions P(x_{t+1} | x_0...x_t).
+        Output[t] is the GT distribution for token t+1.
         """
         if hasattr(process, 'processes') and hasattr(process, 'switch_schedule'):
             return self._compute_mixed_gt_distributions(sequences, process, start_state_idx)
@@ -51,8 +43,6 @@ class MarkovKLAnalyzer:
                                    process,
                                    start_state_idx: Optional[int]=None) -> Tuple[torch.Tensor, torch.Tensor]:
         
-        # 1. Get Ground Truth Distributions
-        # gt_dists: [Batch, Seq_Len, Vocab]
         gt_dists = self.compute_ground_truth_distributions(sequences, process, start_state_idx)
         
         batch_size, seq_len, vocab_size = model_logits.shape
@@ -62,15 +52,14 @@ class MarkovKLAnalyzer:
         kl_all_values_list = []
 
         for pos in range(seq_len):
-            # Model Logits
+            # Model Logits at 'pos' predict 'pos+1'
             logit_batch = model_logits[:, pos, :]
             model_log_probs = F.log_softmax(logit_batch, dim=-1)
             
-            # GT Dist for this position
+            # GT Dist at 'pos' is also prediction for 'pos+1'
             gt_dist = gt_dists[:, pos, :]
-            gt_log_probs = torch.log(gt_dist + 1e-10)
             
-            # KL Calculation
+            gt_log_probs = torch.log(gt_dist + 1e-10)
             kl_batch = torch.sum(gt_dist * (gt_log_probs - model_log_probs), dim=-1)
             
             kl_per_position[pos] = kl_batch.mean()
@@ -83,12 +72,15 @@ class MarkovKLAnalyzer:
 
         return kl_per_position, kl_all_values
 
+    # =========================================================================
+    # Standard Process Logic
+    # =========================================================================
+
     def _compute_standard_gt_distributions(self, sequences, process, start_state_idx):
         batch_size, seq_len = sequences.shape
         device = sequences.device
         T_emit, T_next = self._get_process_tensors(process, device)
         
-        # Initialize Belief
         if start_state_idx is not None:
             vec = torch.zeros(process.num_states, device=device, dtype=torch.float32)
             vec[start_state_idx] = 1.0
@@ -102,11 +94,27 @@ class MarkovKLAnalyzer:
         
         all_gt_dists = torch.zeros(batch_size, seq_len, self.vocab_size, device=device)
 
+        lookup = None
+        if process.vocab_map is not None:
+            lookup = torch.full((self.vocab_size,), -1, device=device, dtype=torch.long)
+            if isinstance(process.vocab_map, dict):
+                for k, v in process.vocab_map.items(): lookup[v] = k
+            else:
+                for k, v in enumerate(process.vocab_map): lookup[v] = k
+
         for pos in range(seq_len):
-            # 1. P(Next Token)
+            global_emissions = sequences[:, pos]
+            local_emissions = global_emissions.clone()
+            
+            if lookup is not None:
+                local_emissions = lookup[global_emissions]
+
+            T_selected = T_next[local_emissions]
+            next_states = torch.einsum("bs, bsd -> bd", current_states, T_selected)
+            current_states = next_states / (next_states.sum(dim=1, keepdim=True) + 1e-12)
+
             gt_dist = torch.matmul(current_states, T_emit_marginal)
             
-            # Map to global vocab
             if process.vocab_map is not None:
                 gt_dist_mapped = torch.zeros(batch_size, self.vocab_size, device=device)
                 if isinstance(process.vocab_map, dict):
@@ -122,26 +130,11 @@ class MarkovKLAnalyzer:
             gt_dist = gt_dist / (gt_dist.sum(dim=1, keepdim=True) + 1e-12)
             all_gt_dists[:, pos, :] = gt_dist
 
-            # 2. Update Belief
-            # Inverse Map: We need to find local token index.
-            global_emissions = sequences[:, pos]
-            local_emissions = global_emissions.clone()
-            
-            # Simple 1-to-1 inverse map assumption for standard process
-            if process.vocab_map is not None:
-                # Build lookup table dynamically or precompute
-                lookup = torch.full((self.vocab_size,), -1, device=device, dtype=torch.long)
-                if isinstance(process.vocab_map, dict):
-                    for k, v in process.vocab_map.items(): lookup[v] = k
-                else:
-                    for k, v in enumerate(process.vocab_map): lookup[v] = k
-                local_emissions = lookup[global_emissions]
-
-            T_selected = T_next[local_emissions]
-            next_states = torch.einsum("bs, bsd -> bd", current_states, T_selected)
-            current_states = next_states / (next_states.sum(dim=1, keepdim=True) + 1e-12)
-
         return all_gt_dists
+
+    # =========================================================================
+    # Mixed Process Logic
+    # =========================================================================
 
     def _compute_mixed_gt_distributions(self, sequences, mixed_process, start_state_idx):
         batch_size, seq_len = sequences.shape
@@ -175,18 +168,28 @@ class MarkovKLAnalyzer:
                 'inverse_lookup': inverse_lookup
             })
 
-        # --- 2. Initialize ---
+        # --- 2. Initialize Probabilities ---
         active_proc_probs = torch.zeros(batch_size, num_procs, device=device)
         active_proc_probs[:, 0] = 1.0 
 
-        # Handle switching at pos=0 if needed (affects prior before we see x_0, 
-        # but we are skipping prediction of x_0 anyway, so this sets up belief for after x_0)
-        # However, observe_update will fix belief based on x_0. 
-        # The switch_schedule check later handles switches between x_t and x_{t+1}.
+        # --- FIX: Apply Initial Switch Logic (for t=0) ---
+        # If there is a switch at pos 0, it happens BEFORE x_0 is observed.
+        if 0 in mixed_process.switch_schedule:
+             p_switch = mixed_process.switch_schedule[0]
+             new_probs = torch.zeros_like(active_proc_probs)
+             for k in range(num_procs):
+                prev_k = (k - 1) % num_procs
+                # Stay (1-p) + Arrive (p)
+                new_probs[:, k] = (1 - p_switch) * active_proc_probs[:, k] + \
+                                  p_switch * active_proc_probs[:, prev_k]
+             active_proc_probs = new_probs
 
+        # --- 3. Initialize Beliefs ---
+        # Matches MixedProcess.generate_batch_gpu logic:
+        # P0 gets start_state (if set), P1..Pn get steady state.
         proc_beliefs = []
-        for p in mixed_process.processes:
-            if start_state_idx is not None:
+        for i, p in enumerate(mixed_process.processes):
+            if i == 0 and start_state_idx is not None:
                 vec = torch.zeros(p.num_states, device=device)
                 vec[start_state_idx] = 1.0
             else:
@@ -195,13 +198,11 @@ class MarkovKLAnalyzer:
 
         all_gt_dists = torch.zeros(batch_size, seq_len, self.vocab_size, device=device)
 
-        # --- 3. Sequence Loop ---
+        # --- 4. Sequence Loop ---
         for pos in range(seq_len):
             
             # --- Step A: OBSERVE x_t & UPDATE POSTERIOR ---
-            # We see token x_t. This updates our knowledge of the CURRENT state.
             global_token = sequences[:, pos]
-            
             posterior_proc_probs = torch.zeros_like(active_proc_probs)
             evolved_beliefs = [b.clone() for b in proc_beliefs]
             
@@ -220,15 +221,16 @@ class MarkovKLAnalyzer:
                 # 2. Posterior Unnormalized
                 posterior_proc_probs[:, k] = p_x_given_k * active_proc_probs[:, k]
                 
-                # 3. Evolve Belief State (Filter)
+                # 3. Evolve Belief State
                 if valid_mask.any():
                     T_next = process_data[k]['T_next']
                     T_sel = T_next[local_tokens[valid_mask]]
                     next_b = torch.einsum("bs, bsd -> bd", proc_beliefs[k][valid_mask], T_sel)
                     evolved_beliefs[k][valid_mask] = next_b / (next_b.sum(dim=1, keepdim=True) + 1e-12)
 
-            # Normalize Posteriors (Collapse to one-hot if disjoint)
+            # Normalize Posteriors
             posterior_sum = posterior_proc_probs.sum(dim=1, keepdim=True)
+            # Add epsilon to sum to prevent NaN if model generated impossible token
             clean_posteriors = posterior_proc_probs / (posterior_sum + 1e-12)
 
             # --- Step B: STATE MODE LOGIC ---
@@ -244,16 +246,17 @@ class MarkovKLAnalyzer:
             elif mixed_process.state_mode == 'resume':
                 for k in range(num_procs):
                     w = clean_posteriors[:, k].unsqueeze(1)
+                    # If active, evolve. If inactive, keep old.
                     proc_beliefs[k] = w * evolved_beliefs[k] + (1 - w) * proc_beliefs[k]
                     
             elif mixed_process.state_mode == 'steady':
+                # Normal evolution; reset happens in Switching step below
                 for k in range(num_procs):
                     proc_beliefs[k] = evolved_beliefs[k]
 
             active_proc_probs = clean_posteriors
 
             # --- Step C: SWITCHING LOGIC (Prior for NEXT token x_{t+1}) ---
-            # Will a switch happen between index `pos` and `pos+1`?
             next_pos = pos + 1
             if next_pos in mixed_process.switch_schedule:
                 p_switch = mixed_process.switch_schedule[next_pos]
@@ -298,11 +301,9 @@ class MarkovKLAnalyzer:
                 gt_dist_total += mapped_dist * weight
 
             gt_dist_total = gt_dist_total / (gt_dist_total.sum(dim=1, keepdim=True) + 1e-12)
-            
-            # Store at `pos`, aligning with logits[:, pos] which predicts x_{t+1}
             all_gt_dists[:, pos, :] = gt_dist_total
 
-        return all_gt_dists 
+        return all_gt_dists
 
 def compute_markov_kl_divergence(model_logits, sequences, process, analyzer=None, return_per_position=True, start_state_idx: Optional[int]=None) -> Dict[str, float]:
     if analyzer is None:
