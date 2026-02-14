@@ -422,7 +422,7 @@ class MixedProcess:
         else:
             raise ValueError("switch_prob must be either a float or a list of floats")
                 
-        self.switch_times = set(switch_times)
+        # self.switch_times = set(switch_times)
         self.state_mode = state_mode
         self.num_processes = len(processes)
         self.vocab_map=vocab_map
