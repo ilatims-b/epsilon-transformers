@@ -24,7 +24,8 @@ from epsilon_transformers.training.configs.training_configs import (
 from epsilon_transformers.analysis.kl_analysis import MarkovKLAnalyzer, compute_markov_kl_divergence
 from epsilon_transformers.analysis.ngram_analysis import NGramAnalyzer, compute_ngram_kl_divergence
 from epsilon_transformers.analysis.simplex_analysis import SimplexAnalyzer
-from epsilon_transformers.process import Process
+# from epsilon_transformers.process import Process
+from epsilon_transformers.process.Process import MixedProcess
 
 from epsilon_transformers.process.processes import PROCESS_REGISTRY
 
@@ -32,15 +33,30 @@ from epsilon_transformers.process.processes import PROCESS_REGISTRY
 from epsilon_transformers.visualization.plots import _project_to_simplex
 from epsilon_transformers.analysis.activation_analysis import get_beliefs_for_transformer_inputs
     
-def get_process_object(process_name: str, process_params: dict):
-    """Return an instantiated Process object given name and parameters."""
-    process_class = PROCESS_REGISTRY.get(process_name, None)
-    if process_class is None:
-        raise ValueError(
-            f"{process_name!r} is not a recognized process. "
-            f"Available processes: {list(PROCESS_REGISTRY.keys())}"
+def get_process_object(config: ProcessDatasetConfig):
+    """Return an instantiated Process/Mixedprocess object given name and parameters."""
+    if config.mixing:
+        if config.mixing_params is None:
+            raise ValueError("mixing_params must be provided if mixing is True")
+        sub_processes = []
+        process_configs=config.mixing_params.get('processes',[])
+        for p_name, p_params, p_vocab in process_configs:
+            p_class=PROCESS_REGISTRY.get(p_name,None)
+            if p_class is None:
+                raise ValueError(f"Process {p_name} not found in registry")
+            sub_processes.append(p_class(**p_params,vocab_map=p_vocab))
+        return MixedProcess(
+            processes=sub_processes,
+            vocab_map=config.vocab_map,
+            switch_times=config.mixing_params.get('switch_times',[]),
+            switch_prob=config.mixing_params.get('switch_prob',1.0),
+            state_mode=config.mixing_params.get('state_mode','steady')
         )
-    return process_class(**process_params)
+    else:
+        if config.process not in PROCESS_REGISTRY:
+            raise ValueError(f"Process {config.process} not found in registry")
+        return PROCESS_REGISTRY[config.process](**config.process_params,vocab_map=config.vocab_map)
+
 
 def _set_random_seed(seed: int):
     """Set random seeds for reproducibility."""
@@ -405,16 +421,22 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     print(f"[Training] Dataloaders created")
     
     # Initialize KL analyzers
-    val_process = get_process_object(config.dataset.process, config.dataset.process_params)
-    if config.logging.relative_loss:
+    val_process = get_process_object(config.dataset)
+    is_mixed=isinstance(val_process, MixedProcess)
+    if config.logging.relative_loss and not is_mixed:
         minimum_cross_entropy = _compute_myopic_entropy(val_process, model.cfg.n_ctx, device, start_state_idx=config.dataset.start_state_idx)
     else:
-        minimum_cross_entropy = None    
+        if config.logging.relative_loss and is_mixed:
+            print("[Warning] Relative loss is enabled but process is a MixedProcess, skipping myopic entropy calculation since it's not well-defined for mixed processes.")
+        minimum_cross_entropy = None  
+
     ngram_analyzer, markov_analyzer, simplex_analyzer = _setup_analyzers(
         config=config,
         vocab_size=model.cfg.d_vocab,
         device=device
     )
+
+
     num_samples=None
     if hasattr(config.analysis, 'simplex_analysis'):
         num_samples=config.analysis.simplex_analysis.num_samples_for_probe

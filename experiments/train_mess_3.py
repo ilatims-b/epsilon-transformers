@@ -48,16 +48,39 @@ optimizer_config = OptimizerConfig(
 # Dataset Configuration
 # ============================================================================
 
+# dataset_config = ProcessDatasetConfig(
+#     process='Mixed_Mess3',
+#     process_params={'x1': 0.15, 'a1': 0.6, 'x2': 0.15, 'a2': 0.75},
+#     batch_size=128,
+#     num_tokens=150000,
+#     sequence_length=10,
+#     test_split=0.0625,
+#     chunk_size=2048,
+#     test_batch_size=1250,
+#     steady_state=[1/6, 1/6, 1/6, 1/6, 1/6, 1/6]
+# )
 dataset_config = ProcessDatasetConfig(
-    process='Mixed_Mess3',
-    process_params={'x1': 0.15, 'a1': 0.6, 'x2': 0.15, 'a2': 0.75},
-    batch_size=128,
-    num_tokens=150000,
+    process='Mess3',  # Placeholder name, actual logic driven by mixing=True
+    process_params={}, # Ignored for sub-processes when mixing=True
+    batch_size=10,   
+    num_tokens=5000,  
     sequence_length=10,
-    test_split=0.0625,
-    chunk_size=2048,
-    test_batch_size=1250,
-    steady_state=[1/6, 1/6, 1/6, 1/6, 1/6, 1/6]
+    test_split=0.2,
+    chunk_size=1000,
+    test_batch_size=10,
+    steady_state=None, # Let processes compute their own steady states
+    
+    # --- Mixing Configuration ---
+    mixing=True,
+    mixing_params={
+        'processes': [
+            ('Mess3', {'x': 0.15, 'a': 0.6}, {0: 0, 1: 1, 2: 2}),
+            ('Mess3', {'x': 0.15, 'a': 0.75}, {0: 3, 1: 4, 2: 5})
+        ],
+        'switch_times': [5,10], 
+        'switch_prob': [0.5, 1.0],
+        'state_mode': 'same' 
+    }
 )
 
 
@@ -81,7 +104,7 @@ logging_config = LoggingConfig(
     wandb=True,
     # NEW: Option 1 - Pass API key directly (recommended for testing)
     wandb_api_key="9df77e7cbad36f3323af2ea208aa4027a970df97",
-    run_name="trial",
+    run_name="trial_mixed",
     relative_loss=False
     # OR use environment variable: export WANDB_API_KEY="YOUR_KEY"
 )

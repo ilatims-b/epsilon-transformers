@@ -1,4 +1,4 @@
-from typing import Literal, Optional, List as PyList, Dict, Any
+from typing import Literal, Optional, List as PyList, Dict, Any,Union
 from pydantic import BaseModel, field_validator, model_validator
 import pathlib
 import torch
@@ -78,6 +78,10 @@ class ProcessDatasetConfig(Config):
     steady_state: Optional[list[float]]=None
     truncation: Optional[TruncationConfig] = None
 
+    mixing:bool=False
+    mixing_params:Optional[dict]=None
+    vocab_map:Optional[Union[list[int],dict[int,int]]]=None
+
 
     @field_validator("batch_size")
     @classmethod
@@ -135,7 +139,11 @@ class ProcessDatasetConfig(Config):
             chunk_size=self.chunk_size,
             num_samples=num_samples,
             start_state_idx=self.start_state_idx,
-            steady_state=self.steady_state
+            steady_state=self.steady_state,
+
+            mixing=self.mixing,
+            mixing_params=self.mixing_params,
+            vocab_map=self.vocab_map
         )
 
         dataset.enable_truncation = enable_truncation
@@ -289,10 +297,12 @@ class TrainConfig(Config):
         """Validate model vocab matches process vocab (if process is registered)."""
         dataset_process = self.dataset.process
         
-        # Only validate if process is in PROCESS_REGISTRY
+        if self.dataset.mixing:
+            print("[Warning] Dataset mixing is enabled, skipping vocab validation since multiple processes may be involved.")
+            return self
         if dataset_process and dataset_process in PROCESS_REGISTRY:
             try:
-                process_instance=PROCESS_REGISTRY[dataset_process](**self.dataset.process_params)
+                process_instance=PROCESS_REGISTRY[dataset_process](vocab_map=self.dataset.vocab_map,**self.dataset.process_params)
                 process_vocab_len = process_instance.vocab_len
                 if self.model.d_vocab != process_vocab_len:
                     raise ValueError(

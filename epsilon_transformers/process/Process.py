@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union, Callable
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from jaxtyping import Float
@@ -30,7 +30,7 @@ class ProcessHistory:
     def __len__(self):
         return len(self.states)
 
-
+    
 class Process(ABC):
     name: str
     transition_matrix: Float[np.ndarray, "vocab_len num_states num_states"]
@@ -38,52 +38,15 @@ class Process(ABC):
     vocab_len: int
     num_states: int
     steady_state_vector: Float[np.ndarray, "num_states"]
+    vocab_map: Optional[Union[list[int], dict[int, int]]]
+    
     # GPU tensors (lazily initialized)
     _gpu_transition_matrix: Optional[torch.Tensor] = None
     _gpu_steady_state: Optional[torch.Tensor] = None
+    _gpu_vocab_map: Optional[torch.Tensor] = None
     _gpu_device: Optional[torch.device] = None
 
-    # @property
-    # def steady_state_vector(self) -> Float[np.ndarray, "num_states"]:
-    #     state_transition_matrix = np.sum(self.transition_matrix, axis=0)
-
-    #     eigenvalues, eigenvectors = np.linalg.eig(state_transition_matrix.T)
-    #     steady_state_vector = eigenvectors[:, np.isclose(eigenvalues, 1)].real
-    #     normalized_steady_state_vector = steady_state_vector / steady_state_vector.sum()
-    #     out: np.ndarray = normalized_steady_state_vector[:, 0]
-
-    #     assert out.ndim == 1
-    #     assert len(out) == self.num_states
-    #     return out
-    def _compute_steady_state(self) -> Float[np.ndarray, "num_states"]:
-        """Calculates steady state vector from transition matrix."""
-        state_transition_matrix = np.sum(self.transition_matrix, axis=0)
-
-        eigenvalues, eigenvectors = np.linalg.eig(state_transition_matrix.T)
-        steady_state_vector = eigenvectors[:, np.isclose(eigenvalues, 1)].real
-        
-        # Handle case where multiple 1 eigenvalues might exist or normalization needed
-        if steady_state_vector.shape[1] > 0:
-            steady_state_vector = steady_state_vector[:, 0]
-            
-        normalized_steady_state_vector = steady_state_vector / steady_state_vector.sum()
-        out: np.ndarray = normalized_steady_state_vector
-
-        assert out.ndim == 1
-        assert len(out) == self.num_states
-        return out
-
-    @property
-    def is_unifilar(self) -> bool:
-        # For each state, check if there are multiple transitions for each symbol
-        for i in range(self.num_states):
-            for j in range(self.vocab_len):
-                # If there are multiple transitions, return False
-                if np.count_nonzero(self.transition_matrix[j, i, :]) > 1:
-                    return False
-        return True
-
-    def __init__(self):
+    def __init__(self, vocab_map: Optional[Union[list[int], dict[int, int]]] = None):
         self.transition_matrix, self.state_names_dict = self._create_hmm()
         
         if (
@@ -104,50 +67,73 @@ class Process(ABC):
         self.vocab_len = self.transition_matrix.shape[0]
         self.num_states = self.transition_matrix.shape[1]
         self.steady_state_vector = self._compute_steady_state()
+        
+        # Vocabulary Mapping Setup
+        self.vocab_map = vocab_map
+        if self.vocab_map is not None:
+            if len(self.vocab_map) != self.vocab_len:
+                raise ValueError(f"vocab_map length ({len(self.vocab_map)}) must match process vocab_len ({self.vocab_len})")
+        
         # Reset GPU cache
         self._gpu_transition_matrix = None
         self._gpu_steady_state = None
+        self._gpu_vocab_map = None
         self._gpu_device = None
- 
+
+    def _compute_steady_state(self) -> Float[np.ndarray, "num_states"]:
+        """Calculates steady state vector from transition matrix."""
+        state_transition_matrix = np.sum(self.transition_matrix, axis=0)
+        eigenvalues, eigenvectors = np.linalg.eig(state_transition_matrix.T)
+        steady_state_vector = eigenvectors[:, np.isclose(eigenvalues, 1)].real
+        
+        if steady_state_vector.shape[1] > 0:
+            steady_state_vector = steady_state_vector[:, 0]
+            
+        normalized_steady_state_vector = steady_state_vector / steady_state_vector.sum()
+        return normalized_steady_state_vector
+
+    @property
+    def is_unifilar(self) -> bool:
+        for i in range(self.num_states):
+            for j in range(self.vocab_len):
+                if np.count_nonzero(self.transition_matrix[j, i, :]) > 1:
+                    return False
+        return True
 
     @abstractmethod
     def _create_hmm(
         self,
     ) -> tuple[Float[np.ndarray, "vocab_len num_states num_states"], dict[str, int]]:
-        """
-        Create the HMM which defines the process.
-
-        Returns:
-        numpy.ndarray: The transition tensor for the epsilon machine.
-        dict: A dictionary mapping state names to indices.
-        """
         ...
 
-    def __str__(self):
-        return (
-            f"{self.name} Process\n"
-            f"Number of states: {self.num_states}\n"
-            f"Vocabulary length: {self.vocab_len}\n"
-            f"Transition matrix shape: {self.transition_matrix.shape}"
-        )
+    def _apply_vocab_map(self, emission_idx: int) -> int:
+        if self.vocab_map is None:
+            return emission_idx
+        if isinstance(self.vocab_map, dict):
+            return self.vocab_map[emission_idx]
+        return self.vocab_map[emission_idx]
+
     def _ensure_gpu_tensors(self, device: torch.device):
         """Lazily initialize GPU tensors for batch generation."""
         if self._gpu_device != device or self._gpu_transition_matrix is None:
             self._gpu_transition_matrix = torch.tensor(
                 self.transition_matrix, dtype=torch.float32, device=device
             )
-            # self._gpu_steady_state = torch.tensor(
-            #     self.steady_state_vector, dtype=torch.float32, device=device
-            # )
+            if self.vocab_map is not None:
+                # Convert dict to list for tensor creation if necessary
+                v_map = self.vocab_map
+                if isinstance(v_map, dict):
+                    v_map = [v_map[i] for i in range(self.vocab_len)]
+                self._gpu_vocab_map = torch.tensor(v_map, dtype=torch.long, device=device)
+            
             self._gpu_device = device
+
     def _get_gpu_steady_state(self, device: torch.device) -> torch.Tensor:
-        """Helper to safely get or compute steady state tensor."""
         if self._gpu_steady_state is None or self._gpu_device != device:
             self._gpu_steady_state = torch.tensor(
                 self.steady_state_vector, dtype=torch.float32, device=device
             )
         return self._gpu_steady_state
-               
 
     def generate_batch_gpu(
         self,
@@ -156,70 +142,35 @@ class Process(ABC):
         device: torch.device,
         start_state_idx: Optional[int] = None,
     ) -> torch.Tensor:
-        """
-        Generate a batch of sequences on GPU in parallel.
-        
-        Args:
-            batch_size: Number of sequences to generate
-            seq_len: Length of each sequence
-            device: torch device (cuda, mps, or cpu)
-            
-        Returns:
-            torch.Tensor of shape (batch_size, seq_len) with emissions (dtype=long)
-        """
         self._ensure_gpu_tensors(device)
+        T = self._gpu_transition_matrix 
         
-        T = self._gpu_transition_matrix  # (vocab_len, num_states, num_states)
-        
-        
-        # Sample initial states for all sequences: (batch_size,)
-        # Initialize current states
         if start_state_idx is not None:
-            assert 0 <= start_state_idx < self.num_states, f"Invalid start_state_idx: {start_state_idx}"
-            # Create a tensor of shape (batch_size,) filled with start_state_idx
-            current_states = torch.full(
-                (batch_size,), 
-                start_state_idx, 
-                dtype=torch.long, 
-                device=device
-            )
+            current_states = torch.full((batch_size,), start_state_idx, dtype=torch.long, device=device)
         else:
-            # Sample initial states from steady state distribution
-            steady_state = self._get_gpu_steady_state(device)  # (num_states,)
-            if steady_state.ndim==1:
-                probs=steady_state.unsqueeze(0).expand(batch_size, -1)  # (batch_size, num_states)
-            else:
-                probs=steady_state    
-            
-            current_states = torch.multinomial(
-                    probs, 
-                    num_samples=1).squeeze(-1)  # (batch_size,)
+            steady_state = self._get_gpu_steady_state(device)
+            probs = steady_state.unsqueeze(0).expand(batch_size, -1) if steady_state.ndim==1 else steady_state
+            current_states = torch.multinomial(probs, num_samples=1).squeeze(-1)
 
-        
         emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
         
         for t in range(seq_len):
-            # Get transition probs for current states: (batch_size, vocab_len, num_states)
-            # T is (vocab_len, num_states, num_states)
-            # We need T[:, current_states[i], :] for each i
-            trans_probs = T[:, current_states, :]  # (vocab_len, batch_size, num_states)
-            trans_probs = trans_probs.permute(1, 0, 2)  # (batch_size, vocab_len, num_states)
-            
-            # Flatten to (batch_size, vocab_len * num_states)
+            trans_probs = T[:, current_states, :].permute(1, 0, 2)
             flat_probs = trans_probs.reshape(batch_size, -1)
+            joint_idx = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
             
-            # Sample emission and next state jointly
-            joint_idx = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)  # (batch_size,)
-            
-            # Decode emission and next state
             emission = joint_idx // self.num_states
             next_state = joint_idx % self.num_states
             
             emissions[:, t] = emission
             current_states = next_state
         
+        # Apply vocab mapping if it exists
+        if self._gpu_vocab_map is not None:
+            emissions = self._gpu_vocab_map[emissions]
+            
         return emissions
-    
+        
     def generate_batch_gpu_with_beliefs(
         self,
         batch_size: int,
@@ -278,8 +229,12 @@ class Process(ABC):
             denom = next_belief.sum(dim=1, keepdim=True)
             current_belief = next_belief / torch.where(denom < 1e-12, torch.ones_like(denom), denom)
 
+            if self._gpu_vocab_map is not None:
+                stored_emission=self._gpu_vocab_map[emission]
+            else:
+                stored_emission=emission    
             # --- C. Store results ---
-            emissions[:, t] = emission
+            emissions[:, t] = stored_emission
             true_states[:, t] = next_state
             beliefs[:, t] = current_belief
             
@@ -299,6 +254,9 @@ class Process(ABC):
 
         p = self.transition_matrix[:, current_state_idx, :].sum(axis=1)
         emission = np.random.choice(self.vocab_len, p=p)
+        if self.vocab_map is not None:
+            emission = self._apply_vocab_map(emission)
+        return emission    
 
     def yield_emissions(
         self, sequence_len: int, current_state_idx: int | None = None
@@ -317,17 +275,20 @@ class Process(ABC):
             yield emission
             current_state_idx = next_state_idx
 
+
     def _sample_emission_and_next_state(
         self, current_state_idx: int
     ) -> tuple[int, int]:
-        transition_probs = self.transition_matrix[:, current_state_idx, :] # (vocab_len, state)
+        transition_probs = self.transition_matrix[:, current_state_idx, :] 
         emission_next_state_idx = np.random.choice(
             transition_probs.size, p=transition_probs.ravel()
         )
         emission = emission_next_state_idx // self.num_states
         next_state_idx = emission_next_state_idx % self.num_states
+        if self.vocab_map is not None:
+            emission = self._apply_vocab_map(emission)
         return emission, next_state_idx
-
+    
     def yield_emission_histories(
         self, sequence_len: int, num_sequences: int, start_state_idx: Optional[int]=None
     ) -> Iterator[list[int]]:
@@ -439,6 +400,274 @@ def _compute_next_distribution(
     )
     return X_next / np.sum(X_next) if np.sum(X_next) != 0 else X_next
 
+class MixedProcess:
+    """
+    A meta-process that switches between multiple sub-processes based on a schedule.
+    """
+    def __init__(
+        self,
+        processes: list[Process],
+        switch_times: list[int],
+        switch_prob: Union[float,list[float]],
+        state_mode: str = 'steady', # 'same', 'resume', 'steady'
+        vocab_map: Optional[Union[list[int], dict[int, int]]] = None
+    ):
+        self.processes = processes
+        if isinstance(switch_prob, float):
+            self.switch_schedule={t: switch_prob for t in switch_times}
+        elif isinstance(switch_prob, list):
+            if len(switch_prob) != len(switch_times):
+                raise ValueError("If switch_prob is a list, it must have the same length as switch_times")
+            self.switch_schedule={t: p for t, p in zip(switch_times, switch_prob)}
+        else:
+            raise ValueError("switch_prob must be either a float or a list of floats")
+                
+        self.switch_times = set(switch_times)
+        self.state_mode = state_mode
+        self.num_processes = len(processes)
+        self.vocab_map=vocab_map
+        
+        if self.state_mode == 'same':
+            # Verify all processes have compatible state spaces
+            n_states = processes[0].num_states
+            for p in processes:
+                if p.num_states != n_states:
+                    raise ValueError("All processes must have the same number of states for 'same' switching mode.")
+
+    def generate_batch_gpu(
+        self,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+        start_state_idx: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Generates a sequence by mixing sub-processes.
+        """
+        # Ensure all sub-processes have GPU tensors ready
+        for p in self.processes:
+            p._ensure_gpu_tensors(device)
+
+        # 1. Initialize State Tracking
+        # active_process_indices: which process is currently active for each batch element (0 to num_processes-1)
+        active_process_indices = torch.zeros(batch_size, dtype=torch.long, device=device)
+        
+        # current_state_indices: holding current state index for the *active* process
+        # We also need storage for 'resume' mode to remember where each process left off
+        stored_states = torch.zeros((self.num_processes, batch_size), dtype=torch.long, device=device)
+        
+        # Initialize states
+        # For process 0, use start_state_idx if provided, else steady state
+        if start_state_idx is not None:
+             stored_states[0] = start_state_idx
+        else:
+             steady = self.processes[0]._get_gpu_steady_state(device)
+             stored_states[0] = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
+             
+        # Initialize other processes to their steady states (needed for 'resume' or initial switch)
+        for i in range(1, self.num_processes):
+             steady = self.processes[i]._get_gpu_steady_state(device)
+             stored_states[i] = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
+             
+        # Initialize current states from stored_states based on active process (initially 0)
+        current_states = stored_states[0].clone()
+
+        emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        
+        # 2. Generation Loop
+        for t in range(seq_len):
+            # A. Handle Switching
+            if t in self.switch_schedule:
+                # Decide who switches: Bernoulli(switch_prob)
+                current_switch_prob = self.switch_schedule[t]
+                should_switch = torch.bernoulli(torch.full((batch_size,), current_switch_prob, device=device)).bool()
+                
+                if should_switch.any():
+                    # Save current states before switching (crucial for 'resume')
+                    if self.state_mode == 'resume':
+                        # We need to scatter current_states back to stored_states
+                        # stored_states[active_process, batch_idx] = current_state
+                        # This is tricky to vectorize efficiently without advanced indexing
+                        # Simple approach: iterate unique active processes
+                        for p_idx in range(self.num_processes):
+                            mask = (active_process_indices == p_idx) & should_switch
+                            if mask.any():
+                                stored_states[p_idx, mask] = current_states[mask]
+
+                    # Update active process index (cyclic switch: 0 -> 1 -> ... -> 0)
+                    new_indices = (active_process_indices + 1) % self.num_processes
+                    active_process_indices = torch.where(should_switch, new_indices, active_process_indices)
+                    
+                    # Load new states based on mode
+                    mask_switch = should_switch
+                    
+                    if self.state_mode == 'resume':
+                        # Gather stored states for the new process
+                        # We iterate to gather because stored_states is (num_proc, batch)
+                        for p_idx in range(self.num_processes):
+                            mask = (active_process_indices == p_idx) & mask_switch
+                            if mask.any():
+                                current_states[mask] = stored_states[p_idx, mask]
+                                
+                    elif self.state_mode == 'steady':
+                        # Sample from steady state of the NEW process
+                        for p_idx in range(self.num_processes):
+                            mask = (active_process_indices == p_idx) & mask_switch
+                            if mask.any():
+                                steady = self.processes[p_idx]._get_gpu_steady_state(device)
+                                # Expand steady to match number of switching elements
+                                count = mask.sum().item()
+                                if count > 0:
+                                    new_samples = torch.multinomial(steady.unsqueeze(0).expand(count, -1), 1).squeeze(-1)
+                                    current_states[mask] = new_samples
+                                    
+                    elif self.state_mode == 'same':
+                        # Keep current_state value, just apply to new process dynamics
+                        # No update needed to current_states tensor
+                        pass
+
+            # B. Generate Step (Vectorized by Process Group)
+            # Since different processes have different T matrices, we process them in groups
+            step_emissions = torch.zeros(batch_size, dtype=torch.long, device=device)
+            
+            for p_idx, process in enumerate(self.processes):
+                mask = (active_process_indices == p_idx)
+                if not mask.any():
+                    continue
+                
+                # Extract states for this group
+                group_states = current_states[mask]
+                group_size = group_states.shape[0]
+                
+                T = process._gpu_transition_matrix
+                
+                # Sampling logic (similar to Process.generate_batch_gpu)
+                # T: (vocab, state, state)
+                # trans_probs: (vocab, group_size, state)
+                trans_probs = T[:, group_states, :].permute(1, 0, 2)
+                flat_probs = trans_probs.reshape(group_size, -1)
+                
+                joint_idx = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
+                
+                emission = joint_idx // process.num_states
+                next_state = joint_idx % process.num_states
+                
+                # Apply vocab map immediately
+                if process._gpu_vocab_map is not None:
+                    final_emission = process._gpu_vocab_map[emission]
+                else:
+                    final_emission = emission
+
+                # Store back
+                step_emissions[mask] = final_emission
+                current_states[mask] = next_state
+            
+            emissions[:, t] = step_emissions
+
+        return emissions
+    
+    def generate_batch_gpu_with_beliefs(
+        self,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+        start_state_idx: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Generate sequence with beliefs for MixedProcess (state_mode='same').
+        """
+        if self.state_mode != 'same':
+             raise NotImplementedError("generate_batch_gpu_with_beliefs only supports state_mode='same' for now.")
+        
+        # Ensure all sub-processes have GPU tensors ready
+        for p in self.processes:
+            p._ensure_gpu_tensors(device)
+
+        # 1. Initialize State Tracking
+        active_process_indices = torch.zeros(batch_size, dtype=torch.long, device=device)
+        
+        # In state_mode='same', all processes share the state index
+        if start_state_idx is not None:
+            current_states = torch.full((batch_size,), start_state_idx, dtype=torch.long, device=device)
+            # Initial belief is certain
+            current_belief = torch.zeros((batch_size, self.processes[0].num_states), device=device)
+            current_belief[:, start_state_idx] = 1.0
+        else:
+            steady = self.processes[0]._get_gpu_steady_state(device)
+            current_states = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
+             # Initial belief starts at steady state
+            current_belief = steady.unsqueeze(0).expand(batch_size, -1)
+
+        emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        true_states = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        beliefs = torch.empty(batch_size, seq_len, self.processes[0].num_states, dtype=torch.float32, device=device)
+
+        
+        # 2. Generation Loop
+        for t in range(seq_len):
+            # A. Handle Switching
+            if t in self.switch_schedule:
+                current_switch_prob = self.switch_schedule[t]
+                should_switch = torch.bernoulli(torch.full((batch_size,), current_switch_prob, device=device)).bool()
+                
+                if should_switch.any():
+                    # Update active process index (cyclic switch: 0 -> 1 -> ... -> 0)
+                    new_indices = (active_process_indices + 1) % self.num_processes
+                    active_process_indices = torch.where(should_switch, new_indices, active_process_indices)
+
+            # B. Generate Step (Vectorized by Process Group)
+            step_emissions = torch.zeros(batch_size, dtype=torch.long, device=device)
+            step_true_states = torch.zeros(batch_size, dtype=torch.long, device=device)
+            step_beliefs = torch.zeros(batch_size, self.processes[0].num_states, dtype=torch.float32, device=device)
+
+            for p_idx, process in enumerate(self.processes):
+                mask = (active_process_indices == p_idx)
+                if not mask.any():
+                    continue
+                
+                # Extract states for this group
+                group_states = current_states[mask]
+                group_belief = current_belief[mask]
+                group_size = group_states.shape[0]
+                
+                T = process._gpu_transition_matrix
+                
+                # --- Generation (Ground Truth) ---
+                trans_probs = T[:, group_states, :].permute(1, 0, 2)
+                flat_probs = trans_probs.reshape(group_size, -1)
+                joint_idx = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
+                
+                emission = joint_idx // process.num_states
+                next_state = joint_idx % process.num_states
+                
+                # --- Filtering (Belief Update) ---
+                T_emit = T[emission] # (group_size, num_states, num_states)
+                
+                # Belief Update: b_{t} = (b_{t-1} @ T_emit) / Normalization
+                next_belief = torch.bmm(group_belief.unsqueeze(1), T_emit).squeeze(1)
+                denom = next_belief.sum(dim=1, keepdim=True)
+                group_belief = next_belief / torch.where(denom < 1e-12, torch.ones_like(denom), denom)
+
+                # --- Store back ---
+                # Apply vocab map immediately
+                if process._gpu_vocab_map is not None:
+                    final_emission = process._gpu_vocab_map[emission]
+                else:
+                    final_emission = emission
+
+                step_emissions[mask] = final_emission
+                step_true_states[mask] = next_state
+                step_beliefs[mask] = group_belief
+                
+                current_states[mask] = next_state
+                current_belief[mask] = group_belief
+            
+            emissions[:, t] = step_emissions
+            true_states[:, t] = step_true_states
+            beliefs[:, t] = step_beliefs
+
+        return emissions, true_states, beliefs
+
 
 class NormTransitionMixin:
     # GPU tensors for the norm matrix
@@ -448,9 +677,6 @@ class NormTransitionMixin:
         super().__init__()
         # Add extra matrix needed only in this subclass
         self.norm_transition_matrix = self._create_norm_matrix()
-
-        
-
         if (
             len(self.norm_transition_matrix.shape) != 3
             or self.norm_transition_matrix.shape[1] != self.norm_transition_matrix.shape[2]
@@ -539,7 +765,10 @@ class NormTransitionMixin:
             
             # Sample emissions
             emission = torch.multinomial(emission_probs, num_samples=1).squeeze(-1)  # (batch_size,)
-            emissions[:, t] = emission
+            if self._gpu_vocab_map is not None:
+                emission[:,t] = self._gpu_vocab_map[emission]
+            else:
+                emission[:,t] = emission    
             
             # Now sample next state from norm_transition_matrix given emission
             # T_norm[emission, current_states, :] -> need to gather properly
@@ -564,6 +793,7 @@ class NormTransitionMixin:
         )
 
         emission = emission_next_state_idx // self.num_states
+
 
         next_state_idx = np.random.choice(
             self.num_states,

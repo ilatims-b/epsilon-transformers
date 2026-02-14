@@ -10,14 +10,14 @@ from epsilon_transformers.process.Process import Process,NormTransitionMixin
 # TODO: Add test to make sure that all members of this module are a member of Process
 # TODO: Find paper where mess3 process is introduced
 # TODO: Think through whether self.name is necessary (review it's usage in derive_mixed_state_presentation)
-# TODO: Move _create_hmm into the init function prior to super()__init__()
+# TODO: Move _create_hmm into the init function prior to super()__init__(**kwargs)
 
 
 class ZeroOneR(Process):
-    def __init__(self, prob_of_zero_from_r_state: float = 0.5):
+    def __init__(self, prob_of_zero_from_r_state: float = 0.5,**kwargs):
         self.name = "z1r"
         self.p = prob_of_zero_from_r_state
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         T = np.zeros((2, 3, 3))
@@ -31,11 +31,11 @@ class ZeroOneR(Process):
 
 
 class RRXOR(Process):
-    def __init__(self, pR1=0.5, pR2=0.5):
+    def __init__(self, pR1=0.5, pR2=0.5,**kwargs):
         self.name = "rrxor"
         self.pR1 = pR1
         self.pR2 = pR2
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         T = np.zeros((2, 5, 5))
@@ -52,12 +52,12 @@ class RRXOR(Process):
         return T, state_names
 
 class NoisyRRXOR(Process):
-    def __init__(self, pR1=0.5, pR2=0.5, epsilon=0.02):
+    def __init__(self, pR1=0.5, pR2=0.5, epsilon=0.02,**kwargs):
         self.name = "noisy_rrxor"
         self.pR1 = pR1
         self.pR2 = pR2
         self.epsilon = epsilon
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         # 1. Create the base RRXOR Transition Matrix (2, 5, 5)
@@ -86,14 +86,14 @@ class NoisyRRXOR(Process):
             
         return T_noisy, state_names
 class Trun_Mess3(Process):
-    def __init__(self, x=0.15, a=0.6,r=1,t1=1,t2=2):
+    def __init__(self, x=0.15, a=0.6,r=1,t1=1,t2=2,**kwargs):
         self.name = "trun_mess3"
         self.x = x
         self.a = a
         self.r = r
         self.t1 = t1
         self.t2 = t2
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         T = np.zeros((3, 3, 3))
@@ -115,13 +115,13 @@ class Trun_Mess3(Process):
         return T,state_names   
 
 class Mixed_Mess3(Process):
-    def __init__(self, x1=0.15, a1=0.6,x2=0.15,a2=0.6):
+    def __init__(self, x1=0.15, a1=0.6,x2=0.15,a2=0.6,**kwargs):
         self.name = "mixed_mess3"
         self.x1 = x1
         self.a1 = a1
         self.x2 = x2
         self.a2 = a2
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         T = np.zeros((6, 6, 6))
@@ -153,11 +153,11 @@ class Mixed_Mess3(Process):
 
         return T,state_names
 class Linear_Mess3(NormTransitionMixin,Process):
-    def __init__(self, x=0.15, a=0.6):
+    def __init__(self, x=0.15, a=0.6,**kwargs):
         self.name = "linear_mess3"
         self.x = x
         self.a = a
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         T = np.zeros((3, 3, 3))
@@ -198,11 +198,11 @@ class Linear_Mess3(NormTransitionMixin,Process):
         return T_n
     
 class Mess3(Process):
-    def __init__(self, x=0.15, a=0.6):
+    def __init__(self, x=0.15, a=0.6,**kwargs):
         self.name = "mess3"
         self.x = x
         self.a = a
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         T = np.zeros((3, 3, 3))
@@ -224,9 +224,9 @@ class Mess3(Process):
 
 
 class Even(Process):
-    def __init__(self):
+    def __init__(self,**kwargs):
         self.name = "Even"
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         state_names = {"0": 0, "1": 1}
@@ -237,9 +237,9 @@ class Even(Process):
         return T, state_names
 
 class GoldenMean(Process):
-    def __init__(self):
+    def __init__(self,**kwargs):
         self.name = "Golden"
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         state_names = {"0": 0, "1": 1}
@@ -250,9 +250,9 @@ class GoldenMean(Process):
         return T, state_names
  
 class TransitionMatrixProcess(Process):
-    def __init__(self, transition_matrix: np.ndarray):
+    def __init__(self, transition_matrix: np.ndarray,**kwargs):
         self.transition_matrix = transition_matrix
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _create_hmm(self):
         return self.transition_matrix, {
@@ -275,7 +275,7 @@ class SRA(Process):
     - HOLD_S[i]: Holding Subject i. Ready to emit Relation.
     - HOLD_SR[i][j]: Holding Subject i and Relation j. Ready to emit Attribute.
     """
-    def __init__(self, num_subjects=10, num_relations=2,relation_probs: list[float]|None=None):
+    def __init__(self, num_subjects=10, num_relations=2,relation_probs: list[float]|None=None,**kwargs):
         self.name = "sra"
         self.S = num_subjects
         self.R = num_relations
@@ -288,7 +288,7 @@ class SRA(Process):
                     # Optional: normalize automatically or raise error. Raising error is safer for research.
                     raise ValueError(f"relation_probs must sum to 1.0, got {sum(relation_probs)}")
             self.relation_probs = relation_probs       
-        super().__init__()
+        super().__init__(**kwargs)
 
 
     def _create_hmm(self):

@@ -1,11 +1,11 @@
 import torch
 import numpy as np
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union, List
 from jaxtyping import Float
 from torch.utils.data import IterableDataset
 import random
 
-from epsilon_transformers.process.Process import Process
+from epsilon_transformers.process.Process import Process, MixedProcess
 from epsilon_transformers.process.processes import PROCESS_REGISTRY
 
 # TODO: Create a custom dataloader so you don't have to import the collate_function everywehre
@@ -24,6 +24,7 @@ class ProcessDataset(IterableDataset):
     chunk_size: int
     start_state_idx:Optional[int]=None
     steady_state:Optional[list[float]]=None
+    process: Union[Process, MixedProcess]
     
 
     samples:Optional[Iterator[int]]=None #for cpu fallback
@@ -38,36 +39,12 @@ class ProcessDataset(IterableDataset):
         chunk_size: int = 2048,
         start_state_idx: Optional[int] = None,
         steady_state: Optional[list[float]] = None,
+        vocab_map:Optional[Union[list[int],dict[int,int]]]=None,
+        mixing: bool=False,
+        mixing_params:Optional[dict]=None,
         
     ):
         super().__init__()
-
-        process_class = PROCESS_REGISTRY.get(process_name, None)
-        if process_class is None:
-            raise ValueError(
-                f"{process_name} is not a recognized process. It must be one of the following {PROCESS_REGISTRY.keys()}"
-            )
-        self.process: Process = process_class(**process_params)
-        if steady_state is not None:
-            if len(steady_state) != self.process.num_states:
-                raise ValueError(
-                    f"Provided steady_state length ({len(steady_state)}) does not match process num_states ({self.process.num_states})"
-                )
-            # Update the instance variable on the process
-            self.process.steady_state_vector = np.array(steady_state, dtype=float)
-            # Invalidate GPU cache so the new vector is used
-            self.process._gpu_steady_state = None
-        self.samples = self.process.yield_emissions(
-            sequence_len=num_samples * (sequence_length + 1),current_state_idx=start_state_idx
-        )
-        self.process: Process = process_class(**process_params)
-        self.sequence_length = sequence_length
-        self.num_samples = num_samples
-        self.chunk_size = chunk_size
-        self.start_state_idx = start_state_idx
-        self.steady_state = steady_state
-        self.enable_truncation = False
-        self.truncation_choices = None
         if device is None:
             if torch.cuda.is_available():
                 device = torch.device("cuda")
@@ -75,7 +52,56 @@ class ProcessDataset(IterableDataset):
                 device = torch.device("mps")
             else:
                 device = torch.device("cpu")
-        self.device = device        
+        self.device = device 
+
+        if mixing:
+            if mixing_params is None:
+                raise ValueError("mixing params must be provided is mixing is true")
+            sub_processes = []
+            process_configs=mixing_params.get('processes',[])
+            for p_name, p_params, p_vocab in process_configs:
+                p_class= PROCESS_REGISTRY.get(p_name, None)
+                if p_class is None:
+                    raise ValueError(
+                        f"{p_name} is not a recognized process. It must be one of the following {PROCESS_REGISTRY.keys()}"
+                    )
+                sub_processes.append(p_class(vocab_map=p_vocab, **p_params))
+            self.process=MixedProcess(processes=sub_processes,
+                                      vocab_map=vocab_map,
+                                      switch_times=mixing_params.get('switch_times',[]),
+                                      switch_prob=mixing_params.get('switch_prob',0.0),
+                                      state_mode=mixing_params.get('state_mode','steady'),) 
+        else:
+            process_class = PROCESS_REGISTRY.get(process_name, None)
+            if process_class is None:
+                raise ValueError(
+                    f"{process_name} is not a recognized process. It must be one of the following {PROCESS_REGISTRY.keys()}"
+                )
+            self.process: Process = process_class(**process_params)          
+
+            
+            if steady_state is not None:
+                if len(steady_state) != self.process.num_states:
+                    raise ValueError(
+                        f"Provided steady_state length ({len(steady_state)}) does not match process num_states ({self.process.num_states})"
+                    )
+                # Update the instance variable on the process
+                self.process.steady_state_vector = np.array(steady_state, dtype=float)
+                # Invalidate GPU cache so the new vector is used
+                self.process._gpu_steady_state = None
+
+        # self.samples = self.process.yield_emissions(
+        #     sequence_len=num_samples * (sequence_length + 1),current_state_idx=start_state_idx
+        # )
+        # self.process: Process = process_class(**process_params)
+        self.sequence_length = sequence_length
+        self.num_samples = num_samples
+        self.chunk_size = chunk_size
+        self.start_state_idx = start_state_idx
+        self.steady_state = steady_state
+        self.enable_truncation = False
+        self.truncation_choices = None
+               
 
     def __len__(self):
         return self.num_samples
