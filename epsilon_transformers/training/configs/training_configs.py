@@ -271,6 +271,7 @@ class AnalysisConfig(Config):
     ngram_analysis: NGramAnalysisConfig = field(default_factory=NGramAnalysisConfig)
     markov_kl_analysis: MarkovKLAnalysisConfig = field(default_factory=MarkovKLAnalysisConfig)
     simplex_analysis: SimplexAnalysisConfig = field(default_factory=SimplexAnalysisConfig)    
+    analysis_batch_size:Optional[int]=None
 # ============================================================================
 # TrainConfig WITH KL Analysis
 # ============================================================================

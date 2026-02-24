@@ -156,6 +156,7 @@ def _compute_validation_metrics(
     eval_dataloader:DataLoader,
     device: torch.device,
     log: Log,
+    config: TrainConfig,
     ngram_analyzer: Optional[NGramAnalyzer] = None,
     markov_analyzer: Optional[MarkovKLAnalyzer] = None,
     simplex_analyzer: Optional[SimplexAnalyzer] = None,
@@ -218,6 +219,11 @@ def _compute_validation_metrics(
             t1 = time.time()
             t_model_fwd += (t1 - t0)
         print(f"[eval] model forward time: {t_model_fwd:.3f} seconds over {num_batches} batches")    
+    analysis_batch_size=None
+    if analysis_config := getattr(config, 'analysis', None):
+        analysis_batch_size = analysis_config.analysis_batch_size
+    if analysis_batch_size is None:
+        analysis_batch_size=config.dataset.test_batch_size    
     if simplex_analyzer is not None:
         t_simplex_start=time.time()
         try:
@@ -249,6 +255,7 @@ def _compute_validation_metrics(
                 ngram_analyzer=ngram_analyzer,
                 n_values=ngram_analyzer.n_grams,
                 return_per_position=return_per_position,
+                batch_size=analysis_batch_size
             )    
             for metric_name, metric_value in ngram_metrics.items():
                 log.update_metrics("test", metric_name=metric_name, loss=metric_value)
@@ -262,7 +269,8 @@ def _compute_validation_metrics(
                 process=val_process,
                 analyzer=markov_analyzer,
                 return_per_position=return_per_position,
-                start_state_idx=start_state_idx
+                start_state_idx=start_state_idx,
+                batch_size=analysis_batch_size
             )
             for metric_name, metric_value in markov_metrics.items():
                 log.update_metrics("test", metric_name=metric_name, loss=metric_value)
@@ -276,6 +284,7 @@ def _evaluate_log_and_persist(
     optimizer,
     verbose: bool,
     log: Log,
+    config: TrainConfig,
     device: torch.device,
     tokens_trained: int,
     dataset_config: ProcessDatasetConfig,
@@ -299,6 +308,7 @@ def _evaluate_log_and_persist(
                 eval_dataloader=eval_dataloader,
                 device=device,
                 log=log,
+                config=config,
                 ngram_analyzer=ngram_analyzer,
                 markov_analyzer=markov_analyzer,
                 simplex_analyzer=simplex_analyzer,
@@ -537,6 +547,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
                 optimizer=optimizer,
                 log=log,
                 verbose=config.verbose,
+                config=config,
                 device=device,
                 dataset_config=config.dataset,
                 tokens_trained=tokens_trained_so_far,
@@ -572,6 +583,7 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
         optimizer=optimizer,
         log=log,
         verbose=config.verbose,
+        config=config,
         device=device,
         tokens_trained=tokens_trained_so_far,
         dataset_config=config.dataset,

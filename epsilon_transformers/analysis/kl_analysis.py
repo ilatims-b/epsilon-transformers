@@ -129,6 +129,7 @@ class MarkovKLAnalyzer:
 
             gt_dist = gt_dist / (gt_dist.sum(dim=1, keepdim=True) + 1e-12)
             all_gt_dists[:, pos, :] = gt_dist
+            #all_gt_dists shape is [batch_size, seq_len, vocab_size]
 
         return all_gt_dists
 
@@ -305,14 +306,29 @@ class MarkovKLAnalyzer:
 
         return all_gt_dists
 
-def compute_markov_kl_divergence(model_logits, sequences, process, analyzer=None, return_per_position=True, start_state_idx: Optional[int]=None) -> Dict[str, float]:
+def compute_markov_kl_divergence(model_logits, sequences, process, analyzer=None, return_per_position=True, start_state_idx: Optional[int]=None, batch_size:Optional[int]=None) -> Dict[str, float]:
     if analyzer is None:
         analyzer = MarkovKLAnalyzer(model_logits.shape[-1], model_logits.shape[1])
-    
-    kl_per_position, kl_all_values = analyzer.compute_kl_divergence_batch(
-        model_logits, sequences, process, start_state_idx=start_state_idx
-    )
-    
+    total_samples = model_logits.shape[0]
+    if batch_size is None or batch_size >= total_samples:
+        kl_per_position, kl_all_values = analyzer.compute_kl_divergence_batch(
+            model_logits, sequences, process, start_state_idx=start_state_idx
+        )
+    else:
+        # Process in chunks to save memory
+        all_kl_per_pos = []
+        all_kl_vals = []
+        for i in range(0, total_samples, batch_size):
+            batch_logits = model_logits[i : i + batch_size]
+            batch_seqs = sequences[i : i + batch_size]
+            k_pos, k_vals = analyzer.compute_kl_divergence_batch(
+                batch_logits, batch_seqs, process, start_state_idx=start_state_idx
+            )
+            all_kl_per_pos.append(k_pos)
+            all_kl_vals.append(k_vals)
+        
+        kl_per_position = torch.stack(all_kl_per_pos).mean(dim=0)
+        kl_all_values = torch.cat(all_kl_vals)
     results = {
         "kl_div_markov": float(kl_all_values.mean().item()),
     }

@@ -166,14 +166,33 @@ class NGramAnalyzer:
         return kl_per_position, kl_all_values
 
 
-def compute_ngram_kl_divergence(model_logits, sequences, ngram_analyzer, n_values=None, return_per_position=True):
+def compute_ngram_kl_divergence(model_logits, sequences, ngram_analyzer, n_values=None, return_per_position=True, batch_size: Optional[int]=None) -> Dict[str, float]:
     if n_values is None:
         n_values = ngram_analyzer.n_grams
     
     results = {}
+    # for n in n_values:
+    #     kl_per_position, kl_all_values = ngram_analyzer.compute_kl_divergence_batch(model_logits, sequences, n)
+    total_samples = model_logits.shape[0]
+    
     for n in n_values:
-        kl_per_position, kl_all_values = ngram_analyzer.compute_kl_divergence_batch(model_logits, sequences, n)
-        
+        if batch_size is None or batch_size >= total_samples:
+            kl_per_position, kl_all_values = ngram_analyzer.compute_kl_divergence_batch(model_logits, sequences, n)
+        else:
+            all_kl_per_pos = []
+            all_kl_vals = []
+            for i in range(0, total_samples, batch_size):
+                k_pos, k_vals = ngram_analyzer.compute_kl_divergence_batch(
+                    model_logits[i : i + batch_size], 
+                    sequences[i : i + batch_size], 
+                    n
+                )
+                if k_vals.numel() > 0:
+                    all_kl_per_pos.append(k_pos)
+                    all_kl_vals.append(k_vals)
+            
+            kl_per_position = torch.stack(all_kl_per_pos).mean(dim=0) if all_kl_per_pos else torch.tensor([])
+            kl_all_values = torch.cat(all_kl_vals) if all_kl_vals else torch.tensor([])    
         if kl_all_values.numel() > 0:
             results[f"kl_div_ngram_{n}"] = float(kl_all_values.mean().item())
         else:
