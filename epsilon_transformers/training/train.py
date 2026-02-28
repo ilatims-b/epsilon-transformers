@@ -379,7 +379,7 @@ def evaluate_suffix_only(model, dataloader, device,suffix_eval: bool = False) ->
 
 
 
-def train_model(config: TrainConfig, run_id: str = None, return_per_position: bool = True) -> Tuple:
+def train_model(config: TrainConfig, run_id: str = None,save_dir: str = None, return_per_position: bool = True) -> Tuple:
     """Train transformer model with KL analysis metrics."""
     device = torch.device(
         "mps" if torch.backends.mps.is_available()
@@ -408,7 +408,11 @@ def train_model(config: TrainConfig, run_id: str = None, return_per_position: bo
     tokens_trained_so_far = 0
 
     if run_id:
-        checkpoint = persister.load_latest_checkpoint(device=device)
+        save_dir = pathlib.Path(save_dir)
+        checkpoints = sorted(save_dir.glob("*.pt"))
+        latest = checkpoints[-1]
+        checkpoint = torch.load(latest, map_location=device)
+        #checkpoint = persister.load_latest_checkpoint(device=device)
         if checkpoint is not None:
             print("[Resume] Restoring model & optimizer")
 
