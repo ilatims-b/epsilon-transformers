@@ -409,6 +409,7 @@ def train_model(config: TrainConfig, run_id: str = None,save_dir: str = None, re
     tokens_trained_so_far = 0
 
     if run_id:
+        save_dir = pathlib.Path(save_dir)
         all_files = list(save_dir.glob("*.pt"))
         valid_checkpoints = []
 
