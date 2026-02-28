@@ -1,6 +1,7 @@
 import fire
 import pathlib
 import random
+import re
 import numpy as np
 import time
 from pyparsing import Opt
@@ -408,14 +409,39 @@ def train_model(config: TrainConfig, run_id: str = None,save_dir: str = None, re
     tokens_trained_so_far = 0
 
     if run_id:
-        save_dir = pathlib.Path(save_dir)
-        checkpoints = sorted(save_dir.glob("*.pt"))
+        all_files = list(save_dir.glob("*.pt"))
+        valid_checkpoints = []
+
+        def parse_tokens(path: pathlib.Path) -> int:
+            
+            short_match = re.match(r"^(\d+)\.pt$", path.name)
+            if short_match:
+                return int(short_match.group(1))
+            
+            
+            long_match = re.search(r"tokens_(\d+)", path.name)
+            if long_match:
+                return int(long_match.group(1))
+            
+            return -1
+
+        for p in all_files:
+            
+            if "ngram_counts" in p.name or "train_config" in p.name:
+                continue
+            
+            if parse_tokens(p) != -1:
+                valid_checkpoints.append(p)
+
+        print(f"[Persister] Found {len(valid_checkpoints)} checkpoints in {save_dir}")
+        checkpoints=  sorted(valid_checkpoints, key=parse_tokens) 
+        
         latest = checkpoints[-1]
         checkpoint = torch.load(latest, map_location=device)
-        print("[Resume] The checkpoints are loaded (hopefully)")
-        #checkpoint = persister.load_latest_checkpoint(device=device)
+        print("[Resume] The checkpoints are loaded")
+        
         if checkpoint is not None:
-            print("[Resume] Restoring model & optimizer (checkpoints loaded!!(is not NONE))")
+            print("[Resume] Restoring model & optimizer (checkpoints loaded)")
 
             model.load_state_dict(checkpoint["model_state_dict"])
 
