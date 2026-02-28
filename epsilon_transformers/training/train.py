@@ -412,9 +412,10 @@ def train_model(config: TrainConfig, run_id: str = None,save_dir: str = None, re
         checkpoints = sorted(save_dir.glob("*.pt"))
         latest = checkpoints[-1]
         checkpoint = torch.load(latest, map_location=device)
+        print("[Resume] The checkpoints are loaded (hopefully)")
         #checkpoint = persister.load_latest_checkpoint(device=device)
         if checkpoint is not None:
-            print("[Resume] Restoring model & optimizer")
+            print("[Resume] Restoring model & optimizer (checkpoints loaded!!(is not NONE))")
 
             model.load_state_dict(checkpoint["model_state_dict"])
 
