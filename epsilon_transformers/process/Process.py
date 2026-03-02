@@ -565,7 +565,6 @@ class MixedProcess:
             emissions[:, t] = step_emissions
 
         return emissions
-    
     def generate_batch_gpu_with_beliefs(
         self,
         batch_size: int,
@@ -574,35 +573,49 @@ class MixedProcess:
         start_state_idx: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Generate sequence with beliefs for MixedProcess (state_mode='same').
+        Generate sequence with beliefs for MixedProcess (state_mode='same' or 'resume').
         """
-        if self.state_mode != 'same':
-             raise NotImplementedError("generate_batch_gpu_with_beliefs only supports state_mode='same' for now.")
+        if self.state_mode not in ['same', 'resume']:
+             raise NotImplementedError(f"generate_batch_gpu_with_beliefs does not support state_mode='{self.state_mode}' yet.")
         
         # Ensure all sub-processes have GPU tensors ready
         for p in self.processes:
             p._ensure_gpu_tensors(device)
 
-        # 1. Initialize State Tracking
+        # 1. Initialize State & Belief Tracking
         active_process_indices = torch.zeros(batch_size, dtype=torch.long, device=device)
+        num_states = self.processes[0].num_states
         
-        # In state_mode='same', all processes share the state index
-        if start_state_idx is not None:
-            current_states = torch.full((batch_size,), start_state_idx, dtype=torch.long, device=device)
-            # Initial belief is certain
-            current_belief = torch.zeros((batch_size, self.processes[0].num_states), device=device)
-            current_belief[:, start_state_idx] = 1.0
-        else:
-            steady = self.processes[0]._get_gpu_steady_state(device)
-            current_states = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
-             # Initial belief starts at steady state
-            current_belief = steady.unsqueeze(0).expand(batch_size, -1)
+        if self.state_mode == 'same':
+            # Single shared reality: One tracker for all processes
+            if start_state_idx is not None:
+                current_states = torch.full((batch_size,), start_state_idx, dtype=torch.long, device=device)
+                current_belief = torch.zeros((batch_size, num_states), device=device)
+                current_belief[:, start_state_idx] = 1.0
+            else:
+                steady = self.processes[0]._get_gpu_steady_state(device)
+                current_states = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
+                current_belief = steady.unsqueeze(0).expand(batch_size, -1).clone()
 
+        elif self.state_mode == 'resume':
+            # Parallel universes: Independent trackers for each process
+            stored_states = torch.zeros((self.num_processes, batch_size), dtype=torch.long, device=device)
+            stored_beliefs = torch.zeros((self.num_processes, batch_size, num_states), dtype=torch.float32, device=device)
+            
+            for p_idx, p in enumerate(self.processes):
+                if p_idx == 0 and start_state_idx is not None:
+                    stored_states[p_idx] = start_state_idx
+                    stored_beliefs[p_idx, :, start_state_idx] = 1.0
+                else:
+                    steady = p._get_gpu_steady_state(device)
+                    stored_states[p_idx] = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
+                    stored_beliefs[p_idx] = steady.unsqueeze(0).expand(batch_size, -1).clone()
+
+        # Output Tensors
         emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
         true_states = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
-        beliefs = torch.empty(batch_size, seq_len, self.processes[0].num_states, dtype=torch.float32, device=device)
+        beliefs = torch.empty(batch_size, seq_len, num_states, dtype=torch.float32, device=device)
 
-        
         # 2. Generation Loop
         for t in range(seq_len):
             # A. Handle Switching
@@ -618,18 +631,22 @@ class MixedProcess:
             # B. Generate Step (Vectorized by Process Group)
             step_emissions = torch.zeros(batch_size, dtype=torch.long, device=device)
             step_true_states = torch.zeros(batch_size, dtype=torch.long, device=device)
-            step_beliefs = torch.zeros(batch_size, self.processes[0].num_states, dtype=torch.float32, device=device)
+            step_beliefs = torch.zeros(batch_size, num_states, dtype=torch.float32, device=device)
 
             for p_idx, process in enumerate(self.processes):
                 mask = (active_process_indices == p_idx)
                 if not mask.any():
                     continue
                 
-                # Extract states for this group
-                group_states = current_states[mask]
-                group_belief = current_belief[mask]
-                group_size = group_states.shape[0]
+                # Extract states and beliefs for this group based on state_mode
+                if self.state_mode == 'same':
+                    group_states = current_states[mask]
+                    group_belief = current_belief[mask]
+                else: # 'resume'
+                    group_states = stored_states[p_idx, mask]
+                    group_belief = stored_beliefs[p_idx, mask]
                 
+                group_size = group_states.shape[0]
                 T = process._gpu_transition_matrix
                 
                 # --- Generation (Ground Truth) ---
@@ -649,7 +666,6 @@ class MixedProcess:
                 group_belief = next_belief / torch.where(denom < 1e-12, torch.ones_like(denom), denom)
 
                 # --- Store back ---
-                # Apply vocab map immediately
                 if process._gpu_vocab_map is not None:
                     final_emission = process._gpu_vocab_map[emission]
                 else:
@@ -659,15 +675,325 @@ class MixedProcess:
                 step_true_states[mask] = next_state
                 step_beliefs[mask] = group_belief
                 
-                current_states[mask] = next_state
-                current_belief[mask] = group_belief
+                # Update the specific tracking mechanism
+                if self.state_mode == 'same':
+                    current_states[mask] = next_state
+                    current_belief[mask] = group_belief
+                else: # 'resume'
+                    stored_states[p_idx, mask] = next_state
+                    stored_beliefs[p_idx, mask] = group_belief
             
             emissions[:, t] = step_emissions
             true_states[:, t] = step_true_states
             beliefs[:, t] = step_beliefs
 
         return emissions, true_states, beliefs
+    # def generate_batch_gpu_with_beliefs(
+    #     self,
+    #     batch_size: int,
+    #     seq_len: int,
+    #     device: torch.device,
+    #     start_state_idx: Optional[int] = None,
+    # ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    #     """
+    #     Generate sequence with beliefs for MixedProcess (state_mode='same').
+    #     """
+    #     if self.state_mode != 'same':
+    #          raise NotImplementedError("generate_batch_gpu_with_beliefs only supports state_mode='same' for now.")
+        
+    #     # Ensure all sub-processes have GPU tensors ready
+    #     for p in self.processes:
+    #         p._ensure_gpu_tensors(device)
 
+    #     # 1. Initialize State Tracking
+    #     active_process_indices = torch.zeros(batch_size, dtype=torch.long, device=device)
+        
+    #     # In state_mode='same', all processes share the state index
+    #     if start_state_idx is not None:
+    #         current_states = torch.full((batch_size,), start_state_idx, dtype=torch.long, device=device)
+    #         # Initial belief is certain
+    #         current_belief = torch.zeros((batch_size, self.processes[0].num_states), device=device)
+    #         current_belief[:, start_state_idx] = 1.0
+    #     else:
+    #         steady = self.processes[0]._get_gpu_steady_state(device)
+    #         current_states = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
+    #          # Initial belief starts at steady state
+    #         current_belief = steady.unsqueeze(0).expand(batch_size, -1)
+
+    #     emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+    #     true_states = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+    #     beliefs = torch.empty(batch_size, seq_len, self.processes[0].num_states, dtype=torch.float32, device=device)
+
+        
+    #     # 2. Generation Loop
+    #     for t in range(seq_len):
+    #         # A. Handle Switching
+    #         if t in self.switch_schedule:
+    #             current_switch_prob = self.switch_schedule[t]
+    #             should_switch = torch.bernoulli(torch.full((batch_size,), current_switch_prob, device=device)).bool()
+                
+    #             if should_switch.any():
+    #                 # Update active process index (cyclic switch: 0 -> 1 -> ... -> 0)
+    #                 new_indices = (active_process_indices + 1) % self.num_processes
+    #                 active_process_indices = torch.where(should_switch, new_indices, active_process_indices)
+
+    #         # B. Generate Step (Vectorized by Process Group)
+    #         step_emissions = torch.zeros(batch_size, dtype=torch.long, device=device)
+    #         step_true_states = torch.zeros(batch_size, dtype=torch.long, device=device)
+    #         step_beliefs = torch.zeros(batch_size, self.processes[0].num_states, dtype=torch.float32, device=device)
+
+    #         for p_idx, process in enumerate(self.processes):
+    #             mask = (active_process_indices == p_idx)
+    #             if not mask.any():
+    #                 continue
+                
+    #             # Extract states for this group
+    #             group_states = current_states[mask]
+    #             group_belief = current_belief[mask]
+    #             group_size = group_states.shape[0]
+                
+    #             T = process._gpu_transition_matrix
+                
+    #             # --- Generation (Ground Truth) ---
+    #             trans_probs = T[:, group_states, :].permute(1, 0, 2)
+    #             flat_probs = trans_probs.reshape(group_size, -1)
+    #             joint_idx = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
+                
+    #             emission = joint_idx // process.num_states
+    #             next_state = joint_idx % process.num_states
+                
+    #             # --- Filtering (Belief Update) ---
+    #             T_emit = T[emission] # (group_size, num_states, num_states)
+                
+    #             # Belief Update: b_{t} = (b_{t-1} @ T_emit) / Normalization
+    #             next_belief = torch.bmm(group_belief.unsqueeze(1), T_emit).squeeze(1)
+    #             denom = next_belief.sum(dim=1, keepdim=True)
+    #             group_belief = next_belief / torch.where(denom < 1e-12, torch.ones_like(denom), denom)
+
+    #             # --- Store back ---
+    #             # Apply vocab map immediately
+    #             if process._gpu_vocab_map is not None:
+    #                 final_emission = process._gpu_vocab_map[emission]
+    #             else:
+    #                 final_emission = emission
+
+    #             step_emissions[mask] = final_emission
+    #             step_true_states[mask] = next_state
+    #             step_beliefs[mask] = group_belief
+                
+    #             current_states[mask] = next_state
+    #             current_belief[mask] = group_belief
+            
+    #         emissions[:, t] = step_emissions
+    #         true_states[:, t] = step_true_states
+    #         beliefs[:, t] = step_beliefs
+
+    #     return emissions, true_states, beliefs
+
+    def derive_exact_mixed_tree_gpu(
+        self,
+        seq_len: int,
+        device: torch.device,
+        start_state_idx: Optional[int] = None,
+        max_beam_width: int = 100000,
+        min_log_prob: float = -40.0,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Explores valid sequences on the GPU using Beam Search / Dynamic Pruning.
+        This prevents O(V^L) memory explosion for long sequences (e.g., L=100) 
+        by discarding impossible or astronomically unlikely paths at each step.
+        
+        Returns:
+            sequences: (B_final, seq_len) Surviving discrete observation paths.
+            seq_probs: (B_final,) The exact ground-truth probability of each surviving sequence.
+            beliefs: (B_final, seq_len, num_states) The observer's marginal belief over states.
+            active_procs: (B_final, seq_len, num_processes) The exact probability of which process is active.
+        """
+        # 1. Initialize Tensors
+        for p in self.processes:
+            p._ensure_gpu_tensors(device)
+
+        vocab_len = self.processes[0].vocab_len
+        num_procs = self.num_processes
+        num_states = self.processes[0].num_states 
+
+        T_emit_list = [p._gpu_transition_matrix for p in self.processes]
+        T_next_list = []
+        for p in self.processes:
+            if hasattr(p, '_gpu_norm_transition_matrix') and p._gpu_norm_transition_matrix is not None:
+                T_next_list.append(p._gpu_norm_transition_matrix)
+            else:
+                T_next_list.append(p._gpu_transition_matrix)
+
+        # Batch starts at 1 (the empty sequence)
+        B = 1
+        sequences = torch.empty((B, 0), dtype=torch.long, device=device)
+        
+        # Use LOG probabilities to prevent float32 underflow over 100 steps
+        seq_log_probs = torch.zeros(B, dtype=torch.float32, device=device) # log(1.0) = 0.0
+
+        # Track active process probabilities (B, K)
+        active_proc_probs = torch.zeros(B, num_procs, device=device)
+        active_proc_probs[:, 0] = 1.0
+
+        # Track beliefs per process (B, K, S)
+        proc_beliefs = torch.zeros(B, num_procs, num_states, device=device)
+        for k, p in enumerate(self.processes):
+            if k == 0 and start_state_idx is not None:
+                proc_beliefs[:, k, start_state_idx] = 1.0
+            else:
+                steady = p._get_gpu_steady_state(device)
+                proc_beliefs[:, k, :] = steady
+
+        # Outputs (will hold historical tensors)
+        all_step_beliefs = []
+        all_step_active_procs = []
+
+        # Handle initial switch at t=0 before any observations
+        if 0 in self.switch_schedule:
+            p_switch = self.switch_schedule[0]
+            new_active = torch.zeros_like(active_proc_probs)
+            for k in range(num_procs):
+                prev_k = (k - 1) % num_procs
+                new_active[:, k] = (1 - p_switch) * active_proc_probs[:, k] + p_switch * active_proc_probs[:, prev_k]
+            active_proc_probs = new_active
+
+        # 2. Pruned Tensor Expansion Loop
+        for t in range(seq_len):
+            # A. Expand everything by V to test all next possible tokens
+            sequences_next = sequences.repeat_interleave(vocab_len, dim=0)          
+            seq_log_probs_next = seq_log_probs.repeat_interleave(vocab_len, dim=0)          
+            active_proc_probs_next = active_proc_probs.repeat_interleave(vocab_len, dim=0) 
+            proc_beliefs_next = proc_beliefs.repeat_interleave(vocab_len, dim=0)    
+
+            B_expanded = sequences_next.shape[0]
+
+            # B. Append the new combinatorial emissions
+            emissions = torch.arange(vocab_len, device=device).repeat(B)
+            sequences_next = torch.cat([sequences_next, emissions.unsqueeze(1)], dim=1)  
+
+            # C. Observation Update (Filter)
+            posterior_proc_probs = torch.zeros_like(active_proc_probs_next)
+            evolved_beliefs = torch.zeros_like(proc_beliefs_next)
+            p_emission = torch.zeros(B_expanded, device=device)
+
+            for k in range(num_procs):
+                T_emit_marginal = T_emit_list[k].sum(dim=2)           
+                emission_likelihoods = T_emit_marginal[emissions]     
+
+                # Likelihood: P(emission | process k)
+                p_x_given_k = (proc_beliefs_next[:, k, :] * emission_likelihoods).sum(dim=1) 
+                posterior_proc_probs[:, k] = p_x_given_k * active_proc_probs_next[:, k]
+
+                # Evolve belief for process k
+                T_sel = T_next_list[k][emissions]                     
+                next_b = torch.einsum("bs, bsd -> bd", proc_beliefs_next[:, k, :], T_sel)
+                
+                # Normalize evolving belief
+                evolved_beliefs[:, k, :] = next_b / (next_b.sum(dim=1, keepdim=True) + 1e-12)
+                p_emission += posterior_proc_probs[:, k]
+
+            # Update overall sequence LOG probability
+            seq_log_probs_next = seq_log_probs_next + torch.log(p_emission + 1e-30)
+            
+            # Normalize active process probabilities
+            active_proc_probs_next = posterior_proc_probs / (p_emission.unsqueeze(1) + 1e-12)
+
+            # D. Mixed Process State Logic
+            if self.state_mode == 'same':
+                avg_belief = torch.zeros_like(proc_beliefs_next[:, 0, :])
+                for k in range(num_procs):
+                    w = active_proc_probs_next[:, k].unsqueeze(1)
+                    avg_belief += evolved_beliefs[:, k, :] * w
+                avg_belief = avg_belief / (avg_belief.sum(dim=1, keepdim=True) + 1e-12)
+                for k in range(num_procs):
+                    proc_beliefs_next[:, k, :] = avg_belief
+            elif self.state_mode == 'resume':
+                for k in range(num_procs):
+                    w = active_proc_probs_next[:, k].unsqueeze(1)
+                    proc_beliefs_next[:, k, :] = w * evolved_beliefs[:, k, :] + (1 - w) * proc_beliefs_next[:, k, :]
+            elif self.state_mode == 'steady':
+                for k in range(num_procs):
+                    proc_beliefs_next[:, k, :] = evolved_beliefs[:, k, :]
+
+            # ==========================================================
+            # E. DYNAMIC PRUNING (The Beam Search Magic)
+            # ==========================================================
+            # 1. Mask out mathematically impossible (p_emission == 0) and highly unlikely paths
+            valid_mask = (p_emission > 0.0) & (seq_log_probs_next > min_log_prob)
+            
+            # 2. Hard cutoff if we exceed GPU memory limits (Beam Width)
+            if valid_mask.sum() > max_beam_width:
+                top_k_thresh = torch.topk(seq_log_probs_next[valid_mask], max_beam_width).values[-1]
+                valid_mask = valid_mask & (seq_log_probs_next >= top_k_thresh)
+
+            # 3. Apply the mask to all current-step tracking tensors
+            sequences = sequences_next[valid_mask]
+            seq_log_probs = seq_log_probs_next[valid_mask]
+            active_proc_probs = active_proc_probs_next[valid_mask]
+            proc_beliefs = proc_beliefs_next[valid_mask]
+            
+            # 4. Apply the mask to historical step tensors to keep paths aligned
+            for i in range(len(all_step_beliefs)):
+                all_step_beliefs[i] = all_step_beliefs[i].repeat_interleave(vocab_len, dim=0)[valid_mask]
+                all_step_active_procs[i] = all_step_active_procs[i].repeat_interleave(vocab_len, dim=0)[valid_mask]
+
+            B_surviving = sequences.shape[0]
+
+            # ==========================================================
+            # F. Record Beliefs and Active Processes for the CURRENT step
+            # ==========================================================
+            marginal_belief = torch.zeros(B_surviving, num_states, device=device)
+            for k in range(num_procs):
+                marginal_belief += active_proc_probs[:, k].unsqueeze(1) * proc_beliefs[:, k, :]
+            
+            all_step_beliefs.append(marginal_belief)
+            all_step_active_procs.append(active_proc_probs.clone())
+
+            # ==========================================================
+            # G. Switching Logic (Prior preparation for the NEXT step)
+            # ==========================================================
+            next_pos = t + 1
+            if next_pos in self.switch_schedule:
+                p_switch = self.switch_schedule[next_pos]
+                new_active_probs = torch.zeros_like(active_proc_probs)
+                new_beliefs = torch.zeros_like(proc_beliefs)
+
+                for k in range(num_procs):
+                    prev_k = (k - 1) % num_procs
+                    prob_stay = (1 - p_switch) * active_proc_probs[:, k]
+                    prob_arrive = p_switch * active_proc_probs[:, prev_k]
+                    total_prob = prob_stay + prob_arrive
+                    new_active_probs[:, k] = total_prob
+
+                    if self.state_mode == 'steady':
+                        steady_vec = self.processes[k]._get_gpu_steady_state(device).unsqueeze(0).expand(B_surviving, -1)
+                        w_stay = (prob_stay / (total_prob + 1e-12)).unsqueeze(1)
+                        w_arrive = (prob_arrive / (total_prob + 1e-12)).unsqueeze(1)
+                        new_beliefs[:, k, :] = w_stay * proc_beliefs[:, k, :] + w_arrive * steady_vec
+                    else:
+                        new_beliefs[:, k, :] = proc_beliefs[:, k, :]
+
+                active_proc_probs = new_active_probs
+                proc_beliefs = new_beliefs
+            
+            # Optional: Print tracking progress if dealing with massive sequences
+            # print(f"Step {t+1}: Tracking {B_surviving} valid sequences...")
+
+            B = B_surviving
+
+        # 3. Final Formatting
+        # Convert log probabilities back to real probabilities for the final output
+        seq_probs = torch.exp(seq_log_probs).float()
+        
+        all_step_beliefs = torch.stack(all_step_beliefs, dim=1)           # (B_final, L, S)
+        all_step_active_procs = torch.stack(all_step_active_procs, dim=1) # (B_final, L, K)
+
+        # Apply Vocab Mapping (e.g. converting 0,1,2 back to internal IDs if needed)
+        if self.vocab_map is not None and self.processes[0]._gpu_vocab_map is not None:
+            sequences = self.processes[0]._gpu_vocab_map[sequences]
+
+        return sequences, seq_probs, all_step_beliefs, all_step_active_procs
 
 class NormTransitionMixin:
     # GPU tensors for the norm matrix

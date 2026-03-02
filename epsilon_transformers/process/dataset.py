@@ -77,7 +77,7 @@ class ProcessDataset(IterableDataset):
                 raise ValueError(
                     f"{process_name} is not a recognized process. It must be one of the following {PROCESS_REGISTRY.keys()}"
                 )
-            self.process: Process = process_class(**process_params)          
+            self.process: Process = process_class(**process_params, vocab_map=vocab_map)          
 
             
             if steady_state is not None:
@@ -106,12 +106,6 @@ class ProcessDataset(IterableDataset):
     def __len__(self):
         return self.num_samples
 
-    # def __iter__(self) -> Iterator[tuple[list[int], list[int]]]:
-    #     for _ in range(self.num_samples):
-    #         process_history = [
-    #             next(self.samples) for _ in range(self.sequence_length + 1)
-    #         ]
-    #         yield (process_history[:-1], process_history[1:])
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         """
         Iterate over samples, generating in GPU batches for efficiency.
