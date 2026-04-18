@@ -688,6 +688,141 @@ class MixedProcess:
             beliefs[:, t] = step_beliefs
 
         return emissions, true_states, beliefs
+    from typing import Optional
+
+    def generate_batch_gpu_with_beliefs_proc_mask(
+        self,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+        start_state_idx: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Generate sequence with beliefs for MixedProcess (state_mode='same' or 'resume').
+        Returns:
+            emissions: (batch_size, seq_len)
+            true_states: (batch_size, seq_len)
+            beliefs: (batch_size, seq_len, num_states)
+            process_masks: (batch_size, seq_len) - The ID of the active process at each step.
+        """
+        if self.state_mode not in ['same', 'resume']:
+             raise NotImplementedError(f"generate_batch_gpu_with_beliefs does not support state_mode='{self.state_mode}' yet.")
+        
+        # Ensure all sub-processes have GPU tensors ready
+        for p in self.processes:
+            p._ensure_gpu_tensors(device)
+
+        # 1. Initialize State & Belief Tracking
+        active_process_indices = torch.zeros(batch_size, dtype=torch.long, device=device)
+        num_states = self.processes[0].num_states
+        
+        if self.state_mode == 'same':
+            # Single shared reality: One tracker for all processes
+            if start_state_idx is not None:
+                current_states = torch.full((batch_size,), start_state_idx, dtype=torch.long, device=device)
+                current_belief = torch.zeros((batch_size, num_states), device=device)
+                current_belief[:, start_state_idx] = 1.0
+            else:
+                steady = self.processes[0]._get_gpu_steady_state(device)
+                current_states = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
+                current_belief = steady.unsqueeze(0).expand(batch_size, -1).clone()
+
+        elif self.state_mode == 'resume':
+            # Parallel universes: Independent trackers for each process
+            stored_states = torch.zeros((self.num_processes, batch_size), dtype=torch.long, device=device)
+            stored_beliefs = torch.zeros((self.num_processes, batch_size, num_states), dtype=torch.float32, device=device)
+            
+            for p_idx, p in enumerate(self.processes):
+                if p_idx == 0 and start_state_idx is not None:
+                    stored_states[p_idx] = start_state_idx
+                    stored_beliefs[p_idx, :, start_state_idx] = 1.0
+                else:
+                    steady = p._get_gpu_steady_state(device)
+                    stored_states[p_idx] = torch.multinomial(steady.unsqueeze(0).expand(batch_size, -1), 1).squeeze(-1)
+                    stored_beliefs[p_idx] = steady.unsqueeze(0).expand(batch_size, -1).clone()
+
+        # Output Tensors
+        emissions = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        true_states = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+        beliefs = torch.empty(batch_size, seq_len, num_states, dtype=torch.float32, device=device)
+        
+        # NEW: Tensor to track the active process ID
+        process_masks = torch.empty(batch_size, seq_len, dtype=torch.long, device=device)
+
+        # 2. Generation Loop
+        for t in range(seq_len):
+            # A. Handle Switching
+            if t in self.switch_schedule:
+                current_switch_prob = self.switch_schedule[t]
+                should_switch = torch.bernoulli(torch.full((batch_size,), current_switch_prob, device=device)).bool()
+                
+                if should_switch.any():
+                    # Update active process index (cyclic switch: 0 -> 1 -> ... -> 0)
+                    new_indices = (active_process_indices + 1) % self.num_processes
+                    active_process_indices = torch.where(should_switch, new_indices, active_process_indices)
+
+            # B. Generate Step (Vectorized by Process Group)
+            step_emissions = torch.zeros(batch_size, dtype=torch.long, device=device)
+            step_true_states = torch.zeros(batch_size, dtype=torch.long, device=device)
+            step_beliefs = torch.zeros(batch_size, num_states, dtype=torch.float32, device=device)
+
+            for p_idx, process in enumerate(self.processes):
+                mask = (active_process_indices == p_idx)
+                if not mask.any():
+                    continue
+                
+                # Extract states and beliefs for this group based on state_mode
+                if self.state_mode == 'same':
+                    group_states = current_states[mask]
+                    group_belief = current_belief[mask]
+                else: # 'resume'
+                    group_states = stored_states[p_idx, mask]
+                    group_belief = stored_beliefs[p_idx, mask]
+                
+                group_size = group_states.shape[0]
+                T = process._gpu_transition_matrix
+                
+                # --- Generation (Ground Truth) ---
+                trans_probs = T[:, group_states, :].permute(1, 0, 2)
+                flat_probs = trans_probs.reshape(group_size, -1)
+                joint_idx = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
+                
+                emission = joint_idx // process.num_states
+                next_state = joint_idx % process.num_states
+                
+                # --- Filtering (Belief Update) ---
+                T_emit = T[emission] # (group_size, num_states, num_states)
+                
+                # Belief Update: b_{t} = (b_{t-1} @ T_emit) / Normalization
+                next_belief = torch.bmm(group_belief.unsqueeze(1), T_emit).squeeze(1)
+                denom = next_belief.sum(dim=1, keepdim=True)
+                group_belief = next_belief / torch.where(denom < 1e-12, torch.ones_like(denom), denom)
+
+                # --- Store back ---
+                if process._gpu_vocab_map is not None:
+                    final_emission = process._gpu_vocab_map[emission]
+                else:
+                    final_emission = emission
+
+                step_emissions[mask] = final_emission
+                step_true_states[mask] = next_state
+                step_beliefs[mask] = group_belief
+                
+                # Update the specific tracking mechanism
+                if self.state_mode == 'same':
+                    current_states[mask] = next_state
+                    current_belief[mask] = group_belief
+                else: # 'resume'
+                    stored_states[p_idx, mask] = next_state
+                    stored_beliefs[p_idx, mask] = group_belief
+            
+            # Record everything for timestep t
+            emissions[:, t] = step_emissions
+            true_states[:, t] = step_true_states
+            beliefs[:, t] = step_beliefs
+            process_masks[:, t] = active_process_indices
+
+        return emissions, true_states, beliefs, process_masks
     # def generate_batch_gpu_with_beliefs(
     #     self,
     #     batch_size: int,
