@@ -109,8 +109,12 @@ current_branches = [{'seq': [], 'prob': 1.0, 'belief': A_init}]
 
 avg_kl_pq = np.zeros(100)
 avg_kl_qp = np.zeros(100)
+std_kl_pq = np.zeros(100)
+std_kl_qp = np.zeros(100)
 kl_indep_pq = np.zeros(100)
 kl_indep_qp = np.zeros(100)
+P_marg_over_time = np.zeros((100, D_VOCAB))
+Q_marg_over_time = np.zeros((100, D_VOCAB))
 
 for t in tqdm(range(100), desc="Searching Tree Sequences"):
     sw_prob = get_switch_prob(t)
@@ -174,11 +178,21 @@ for t in tqdm(range(100), desc="Searching Tree Sequences"):
                     })
                         
         norm_b_probs = np.array(branch_probs) / total_prob
-        avg_kl_pq[t] = np.sum(norm_b_probs * np.array(kl_divs_pq))
-        avg_kl_qp[t] = np.sum(norm_b_probs * np.array(kl_divs_qp))
+        
+        mean_pq = np.sum(norm_b_probs * np.array(kl_divs_pq))
+        mean_qp = np.sum(norm_b_probs * np.array(kl_divs_qp))
+        avg_kl_pq[t] = mean_pq
+        avg_kl_qp[t] = mean_qp
+        
+        std_kl_pq[t] = np.sqrt(np.sum(norm_b_probs * (np.array(kl_divs_pq) - mean_pq)**2))
+        std_kl_qp[t] = np.sqrt(np.sum(norm_b_probs * (np.array(kl_divs_qp) - mean_qp)**2))
         
         P_marg /= total_prob
         Q_marg /= total_prob
+        
+        P_marg_over_time[t] = P_marg
+        Q_marg_over_time[t] = Q_marg
+        
         kl_indep_pq[t] = compute_kl(P_marg, Q_marg)
         kl_indep_qp[t] = compute_kl(Q_marg, P_marg)
         
@@ -203,7 +217,28 @@ for t in tqdm(range(100), desc="Searching Tree Sequences"):
 
 x_axis = np.arange(1, 100)
 
+upper_qp = avg_kl_qp[1:] + std_kl_qp[1:]
+lower_qp = avg_kl_qp[1:] - std_kl_qp[1:]
+upper_pq = avg_kl_pq[1:] + std_kl_pq[1:]
+lower_pq = avg_kl_pq[1:] - std_kl_pq[1:]
+
 fig1 = go.Figure()
+
+# Add shaded std error bands first so they sit behind the lines
+fig1.add_trace(go.Scatter(x=np.concatenate([x_axis, x_axis[::-1]]), 
+                          y=np.concatenate([upper_qp, lower_qp[::-1]]),
+                          fill='toself', fillcolor='rgba(0,0,255,0.15)',
+                          line=dict(color='rgba(255,255,255,0)'),
+                          hoverinfo="skip",
+                          showlegend=False))
+                          
+fig1.add_trace(go.Scatter(x=np.concatenate([x_axis, x_axis[::-1]]), 
+                          y=np.concatenate([upper_pq, lower_pq[::-1]]),
+                          fill='toself', fillcolor='rgba(0,255,0,0.15)',
+                          line=dict(color='rgba(255,255,255,0)'),
+                          hoverinfo="skip",
+                          showlegend=False))
+
 fig1.add_trace(go.Scatter(x=x_axis, y=avg_kl_qp[1:], name='Expected KL(Q || P) (Loss Measure)', line=dict(color='blue')))
 fig1.add_trace(go.Scatter(x=x_axis, y=avg_kl_pq[1:], name='Expected KL(P || Q)', line=dict(color='green')))
 
@@ -237,3 +272,16 @@ try:
     print(f"Plots successfully exported to PNG as well in {OUTPUT_DIR}")
 except Exception as e:
     print(f"Skipping PNG export (is 'kaleido' installed?). Reason: {e}")
+
+np.savez(
+    os.path.join(OUTPUT_DIR, "kl_analysis_results.npz"),
+    avg_kl_qp=avg_kl_qp,
+    std_kl_qp=std_kl_qp,
+    avg_kl_pq=avg_kl_pq,
+    std_kl_pq=std_kl_pq,
+    kl_indep_qp=kl_indep_qp,
+    kl_indep_pq=kl_indep_pq,
+    P_marg_over_time=P_marg_over_time,
+    Q_marg_over_time=Q_marg_over_time
+)
+print(f"Data arrays cleanly exported to: {os.path.join(OUTPUT_DIR, 'kl_analysis_results.npz')}")
