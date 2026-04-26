@@ -16,6 +16,7 @@ parser = argparse.ArgumentParser(description="Analyze Sequence-Dependent KL Dive
 parser.add_argument("-c", "--checkpoint_dir", type=str, required=True, help="Path to checkpoint directory containing train_config.json")
 parser.add_argument("-m", "--max_branches", type=int, default=10000, help="Maximum number of branches to keep during beam search")
 parser.add_argument("-o", "--output_dir", type=str, required=True, help="Directory to save the plots")
+parser.add_argument("--chunk_size", type=int, default=4096, help="Chunk size for parallelization")
 args = parser.parse_args()
 
 CHECKPOINT_DIR = args.checkpoint_dir
@@ -97,7 +98,7 @@ def get_next_beliefs_and_probs(A, switch_prob_t):
     A_next[valid_e, 0] = unnorm_A_next_0[valid_e] / P_e[valid_e, None, None]
     A_next[valid_e, 1] = unnorm_A_next_1[valid_e] / P_e[valid_e, None, None]
     
-    return A_next, P_e
+    return S_next, P_e
 
 # ----------------- Execute BFS Tree Pruning -----------------
 
@@ -125,7 +126,7 @@ for t in tqdm(range(100), desc="Searching Tree Sequences"):
     
     if t > 0:
         N = len(current_branches)
-        chunk_size = 4096
+        chunk_size = args.chunk_size
         tf_probs_all = []
         
         for i in range(0, N, chunk_size):
