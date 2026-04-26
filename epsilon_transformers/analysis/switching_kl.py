@@ -17,11 +17,13 @@ parser.add_argument("-c", "--checkpoint_dir", type=str, required=True, help="Pat
 parser.add_argument("-m", "--max_branches", type=int, default=1000, help="Maximum number of branches to keep during beam search")
 parser.add_argument("-o", "--output_dir", type=str, required=True, help="Directory to save the plots")
 parser.add_argument("--chunk_size", type=int, default=4096, help="Chunk size for parallelization")
+parser.add_argument("-s", "--seq_len", type=int, default=100, help="Sequence length for analysis")
 args = parser.parse_args()
 
 CHECKPOINT_DIR = args.checkpoint_dir
 MAX_BRANCHES = args.max_branches
 OUTPUT_DIR = args.output_dir
+SEQ_LEN = args.seq_len
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -98,7 +100,7 @@ def get_next_beliefs_and_probs(A, switch_prob_t):
     A_next[valid_e, 0] = unnorm_A_next_0[valid_e] / P_e[valid_e, None, None]
     A_next[valid_e, 1] = unnorm_A_next_1[valid_e] / P_e[valid_e, None, None]
     
-    return S_next, P_e
+    return A_next, P_e
 
 # ----------------- Execute BFS Tree Pruning -----------------
 
@@ -111,16 +113,16 @@ for i in range(p0.num_states):
         
 current_branches = [{'seq': [], 'prob': 1.0, 'belief': A_init}]
 
-avg_kl_pq = torch.zeros(100, device=device)
-avg_kl_qp = torch.zeros(100, device=device)
-std_kl_pq = torch.zeros(100, device=device)
-std_kl_qp = torch.zeros(100, device=device)
-kl_indep_pq = torch.zeros(100, device=device)
-kl_indep_qp = torch.zeros(100, device=device)
-P_marg_over_time = torch.zeros((100, D_VOCAB), device=device)
-Q_marg_over_time = torch.zeros((100, D_VOCAB), device=device)
+avg_kl_pq = torch.zeros(SEQ_LEN, device=device)
+avg_kl_qp = torch.zeros(SEQ_LEN, device=device)
+std_kl_pq = torch.zeros(SEQ_LEN, device=device)
+std_kl_qp = torch.zeros(SEQ_LEN, device=device)
+kl_indep_pq = torch.zeros(SEQ_LEN, device=device)
+kl_indep_qp = torch.zeros(SEQ_LEN, device=device)
+P_marg_over_time = torch.zeros((SEQ_LEN, D_VOCAB), device=device)
+Q_marg_over_time = torch.zeros((SEQ_LEN, D_VOCAB), device=device)
 
-for t in tqdm(range(100), desc="Searching Tree Sequences"):
+for t in tqdm(range(SEQ_LEN), desc="Searching Tree Sequences"):
     sw_prob = get_switch_prob(t)
     next_branches = []
     
@@ -133,7 +135,7 @@ for t in tqdm(range(100), desc="Searching Tree Sequences"):
             chunk = current_branches[i:i+chunk_size]
             seqs = [b['seq'] for b in chunk]
             
-            pad_seqs = np.zeros((len(chunk), 100), dtype=np.int64)
+            pad_seqs = np.zeros((len(chunk), SEQ_LEN), dtype=np.int64)
             for j, s in enumerate(seqs):
                 pad_seqs[j, :len(s)] = s
                 
@@ -222,7 +224,7 @@ for t in tqdm(range(100), desc="Searching Tree Sequences"):
 
 # ----------------- Visualizations -----------------
 
-x_axis = np.arange(1, 100)
+x_axis = np.arange(1, SEQ_LEN)
 
 avg_kl_qp_np = avg_kl_qp.cpu().numpy()
 std_kl_qp_np = std_kl_qp.cpu().numpy()
