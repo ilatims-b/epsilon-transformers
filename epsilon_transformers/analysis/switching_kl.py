@@ -14,7 +14,7 @@ from epsilon_transformers.process.processes import PROCESS_REGISTRY
 # ----------------- Configuration & Load -----------------
 parser = argparse.ArgumentParser(description="Analyze Sequence-Dependent KL Divergence for Mixed Processes")
 parser.add_argument("-c", "--checkpoint_dir", type=str, required=True, help="Path to checkpoint directory containing train_config.json")
-parser.add_argument("-m", "--max_branches", type=int, default=10000, help="Maximum number of branches to keep during beam search")
+parser.add_argument("-m", "--max_branches", type=int, default=1000, help="Maximum number of branches to keep during beam search")
 parser.add_argument("-o", "--output_dir", type=str, required=True, help="Directory to save the plots")
 parser.add_argument("--chunk_size", type=int, default=4096, help="Chunk size for parallelization")
 args = parser.parse_args()
@@ -196,6 +196,7 @@ for t in tqdm(range(100), desc="Searching Tree Sequences"):
         P_marg /= total_prob
         Q_marg /= total_prob
         
+        print(f"Total probability at time {t}: {total_prob}")
         P_marg_over_time[t] = P_marg
         Q_marg_over_time[t] = Q_marg
         

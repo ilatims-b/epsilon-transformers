@@ -66,7 +66,7 @@ class MarkovKLAnalyzer:
             kl_all_values_list.append(kl_batch)
 
         if len(kl_all_values_list) > 0:
-            kl_all_values = torch.cat(kl_all_values_list, dim=0)
+            kl_all_values = torch.stack(kl_all_values_list, dim=0)
         else:
             kl_all_values = torch.tensor([], device=device)
 
@@ -201,6 +201,7 @@ class MarkovKLAnalyzer:
 
         # --- 4. Sequence Loop ---
         for pos in range(seq_len):
+            # print(f"Processing position {pos+1}/{seq_len}...")
             
             # --- Step A: OBSERVE x_t & UPDATE POSTERIOR ---
             global_token = sequences[:, pos]
@@ -215,6 +216,8 @@ class MarkovKLAnalyzer:
                 # 1. Likelihood P(x_t | k)
                 p_x_given_k = torch.zeros(batch_size, device=device)
                 if valid_mask.any():
+                    # cols is
+
                     cols = process_data[k]['T_emit_marginal'][:, local_tokens[valid_mask]]
                     p_val = (proc_beliefs[k][valid_mask] * cols.t()).sum(dim=1)
                     p_x_given_k[valid_mask] = p_val
@@ -233,7 +236,7 @@ class MarkovKLAnalyzer:
             posterior_sum = posterior_proc_probs.sum(dim=1, keepdim=True)
             # Add epsilon to sum to prevent NaN if model generated impossible token
             clean_posteriors = posterior_proc_probs / (posterior_sum + 1e-12)
-
+            # print(f"Position {pos}: Posterior Probs (first 5 samples): {clean_posteriors[:5].cpu().numpy()}")
             # --- Step B: STATE MODE LOGIC ---
             if mixed_process.state_mode == 'same':
                 avg_belief = torch.zeros_like(proc_beliefs[0])
@@ -326,11 +329,13 @@ def compute_markov_kl_divergence(model_logits, sequences, process, analyzer=None
             )
             all_kl_per_pos.append(k_pos)
             all_kl_vals.append(k_vals)
+            print(f"Processed batch {i // batch_size + 1}")
         
         kl_per_position = torch.stack(all_kl_per_pos).mean(dim=0)
-        kl_all_values = torch.cat(all_kl_vals)
+        kl_all_values = torch.cat(all_kl_vals,dim=0)
     results = {
         "kl_div_markov": float(kl_all_values.mean().item()),
+        "individual_kls": kl_all_values.detach()
     }
     
     if return_per_position:
