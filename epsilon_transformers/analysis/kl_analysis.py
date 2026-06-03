@@ -335,7 +335,7 @@ def compute_markov_kl_divergence(model_logits, sequences, process, analyzer=None
         kl_all_values = torch.cat(all_kl_vals,dim=0)
     results = {
         "kl_div_markov": float(kl_all_values.mean().item()),
-        "individual_kls": kl_all_values.detach()
+        # "individual_kls": kl_all_values.detach()
     }
     
     if return_per_position:
